@@ -56,7 +56,11 @@ gemini = GeminiProfile(
     env_vars=("GOOGLE_API_KEY", "GEMINI_API_KEY"),
     base_url="https://generativelanguage.googleapis.com/v1beta",
     auth_type="api_key",
-    default_aux_model="gemini-3-flash-preview",
+    # Google AI Studio uses ?key= / x-goog-api-key auth for model listing, not
+    # OpenAI-style Bearer auth. The generic doctor /models probe would report a
+    # false "invalid API key" even when generateContent works.
+    supports_health_check=False,
+    default_aux_model="gemini-2.5-flash",
 )
 
 google_gemini_cli = GeminiProfile(

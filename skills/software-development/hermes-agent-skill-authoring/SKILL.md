@@ -83,6 +83,9 @@ One or two paragraphs: what and why.
 ## Common Pitfalls
 Numbered list of mistakes and their fixes.
 
+## Documenting Agentic Patterns (Recommendation)
+For complex skills, consider adding a section to document "Verwendete Agentic Engineering Patterns" or "Delegationsstrategie" to improve consistency and traceability of complex workflows.
+
 ## Verification Checklist
 - [ ] Checkbox list of post-action verifications
 
@@ -151,6 +154,8 @@ Pick the closest existing category. Don't invent new top-level categories casual
 6. **Expecting the current session to see the new skill.** It won't. The skill loader is initialized at session start. Verify in a fresh session or via `skill_view` using the exact path.
 
 7. **Linking to skills that don't exist in-repo.** `related_skills: [some-user-local-skill]` works for you but breaks for other clones. Prefer only in-repo links.
+
+8. **Skill Name Resolution:** If `skills_list` or `skill_view` returns multiple matches for a skill name (e.g., "notion"), the agent will refuse to guess. To resolve, load explicitly by its categorized path (e.g., `productivity:notion`) or manage/remove the ambiguous skill(s).
 
 ## Verification Checklist
 
