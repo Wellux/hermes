@@ -166,6 +166,14 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
         f"Refusing to write to sensitive system path: {filepath}\n"
         "Use the terminal tool with sudo if you need to modify system files."
     )
+    allowed_temp_prefixes = (
+        "/private/var/folders/",  # macOS per-user temp dirs (/var/folders symlink target)
+        "/var/folders/",
+        "/private/var/tmp/",
+        "/var/tmp/",
+    )
+    if resolved.startswith(allowed_temp_prefixes) or normalized.startswith(allowed_temp_prefixes):
+        return None
     for prefix in _SENSITIVE_PATH_PREFIXES:
         if resolved.startswith(prefix) or normalized.startswith(prefix):
             return _err

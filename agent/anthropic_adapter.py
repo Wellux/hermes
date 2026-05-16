@@ -696,7 +696,7 @@ def _read_claude_code_credentials_from_keychain() -> Optional[Dict[str, Any]]:
 
     try:
         data = json.loads(raw)
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, TypeError):
         logger.debug("Keychain: credentials payload is not valid JSON")
         return None
 
@@ -728,10 +728,20 @@ def read_claude_code_credentials() -> Optional[Dict[str, Any]]:
 
     Returns dict with {accessToken, refreshToken?, expiresAt?} or None.
     """
+    # Tests and embedded callers often monkeypatch Path.home() to isolate
+    # credential lookup.  Do not let the host macOS Keychain pierce that
+    # sandbox and override the caller's synthetic home directory.
+    keychain_allowed = True
+    try:
+        keychain_allowed = Path.home() == Path(os.path.expanduser("~"))
+    except Exception:
+        keychain_allowed = True
+
     # Try macOS Keychain first (covers Claude Code >=2.1.114)
-    kc_creds = _read_claude_code_credentials_from_keychain()
-    if kc_creds:
-        return kc_creds
+    if keychain_allowed:
+        kc_creds = _read_claude_code_credentials_from_keychain()
+        if kc_creds:
+            return kc_creds
 
     # Fall back to JSON file
     cred_path = Path.home() / ".claude" / ".credentials.json"
