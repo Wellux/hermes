@@ -247,6 +247,36 @@ class TestSendChunking:
         assert payload["message"] == "*bold text*"
 
     @pytest.mark.asyncio
+    async def test_bare_phone_chat_id_is_normalized_before_bridge_send(self):
+        """Baileys bridge sendMessage requires a WhatsApp JID, not bare digits."""
+        adapter = _make_adapter()
+        resp = MagicMock(status=200)
+        resp.json = AsyncMock(return_value={"messageId": "msg1"})
+        adapter._http_session.post = MagicMock(return_value=_AsyncCM(resp))
+
+        result = await adapter.send("491629001708", "hello")
+
+        assert result.success
+        call_args = adapter._http_session.post.call_args
+        payload = call_args.kwargs.get("json") or call_args[1].get("json")
+        assert payload["chatId"] == "491629001708@s.whatsapp.net"
+
+    @pytest.mark.asyncio
+    async def test_existing_whatsapp_jid_is_preserved_before_bridge_send(self):
+        """Explicit WhatsApp JIDs must not be rewritten."""
+        adapter = _make_adapter()
+        resp = MagicMock(status=200)
+        resp.json = AsyncMock(return_value={"messageId": "msg1"})
+        adapter._http_session.post = MagicMock(return_value=_AsyncCM(resp))
+
+        result = await adapter.send("276514390151316@lid", "hello")
+
+        assert result.success
+        call_args = adapter._http_session.post.call_args
+        payload = call_args.kwargs.get("json") or call_args[1].get("json")
+        assert payload["chatId"] == "276514390151316@lid"
+
+    @pytest.mark.asyncio
     async def test_reply_to_only_on_first_chunk(self):
         """reply_to should only be set on the first chunk."""
         adapter = _make_adapter()

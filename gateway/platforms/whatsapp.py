@@ -34,6 +34,26 @@ from hermes_constants import get_hermes_dir
 logger = logging.getLogger(__name__)
 
 
+_WHATSAPP_JID_RE = re.compile(r"^[0-9A-Za-z._-]+@(s\.whatsapp\.net|lid|g\.us)$")
+
+
+def _normalize_outgoing_chat_id(chat_id: str) -> str:
+    """Normalize phone-number chat IDs before sending to the Baileys bridge.
+
+    Baileys' sendMessage endpoint expects WhatsApp JIDs. Hermes target parsing
+    may pass bare digits or E.164 phone numbers for phone-based platforms, so
+    convert those direct-user forms here while preserving explicit user, LID,
+    and group JIDs.
+    """
+    value = str(chat_id or "").strip()
+    if not value or _WHATSAPP_JID_RE.fullmatch(value):
+        return value
+    digits = value[1:] if value.startswith("+") else value
+    if digits.isdigit() and 7 <= len(digits) <= 15:
+        return f"{digits}@s.whatsapp.net"
+    return value
+
+
 def _kill_port_process(port: int) -> None:
     """Kill any process listening on the given TCP port."""
     try:
@@ -892,11 +912,12 @@ class WhatsAppAdapter(BasePlatformAdapter):
             # Format and chunk the message
             formatted = self.format_message(content)
             chunks = self.truncate_message(formatted, self._outgoing_chunk_limit())
+            normalized_chat_id = _normalize_outgoing_chat_id(chat_id)
 
             last_message_id = None
             for chunk in chunks:
                 payload: Dict[str, Any] = {
-                    "chatId": chat_id,
+                    "chatId": normalized_chat_id,
                     "message": chunk,
                 }
                 if reply_to and last_message_id is None:
