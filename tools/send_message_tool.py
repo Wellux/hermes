@@ -30,6 +30,7 @@ _FEISHU_TARGET_RE = re.compile(r"^\s*((?:oc|ou|on|chat|open)_[-A-Za-z0-9]+)(?::(
 _SLACK_TARGET_RE = re.compile(r"^\s*([CGD][A-Z0-9]{8,})\s*$")
 _WEIXIN_TARGET_RE = re.compile(r"^\s*((?:wxid|gh|v\d+|wm|wb)_[A-Za-z0-9_-]+|[A-Za-z0-9._-]+@chatroom|filehelper)\s*$")
 _YUANBAO_TARGET_RE = re.compile(r"^\s*((?:group|direct):[^:]+)\s*$")
+_WHATSAPP_JID_TARGET_RE = re.compile(r"^\s*([0-9A-Za-z._-]+@(?:s\.whatsapp\.net|lid|g\.us))\s*$")
 # Discord snowflake IDs are numeric, same regex pattern as Telegram topic targets.
 _NUMERIC_TOPIC_RE = _TELEGRAM_TOPIC_TARGET_RE
 # Platforms that address recipients by phone number and accept E.164 format
@@ -344,6 +345,10 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         if target_ref.strip().isdigit():
             return f"group:{target_ref.strip()}", None, True
         return None, None, False
+    if platform_name == "whatsapp":
+        match = _WHATSAPP_JID_TARGET_RE.fullmatch(target_ref)
+        if match:
+            return match.group(1), None, True
     if platform_name in _PHONE_PLATFORMS:
         match = _E164_TARGET_RE.fullmatch(target_ref)
         if match:
@@ -1147,6 +1152,23 @@ async def _send_slack(token, chat_id, message):
         return _error(f"Slack send failed: {e}")
 
 
+def _normalize_whatsapp_chat_id(chat_id: str) -> str:
+    """Normalize WhatsApp direct phone targets into Baileys JIDs.
+
+    Baileys' ``sendMessage`` expects a JID such as ``491629001708@s.whatsapp.net``.
+    The public send_message target parser also accepts bare digits and E.164-style
+    ``+491629001708`` for phone-based platforms, so normalize those WhatsApp-only
+    forms here while preserving already-explicit JIDs (including LID and groups).
+    """
+    value = str(chat_id or "").strip()
+    if "@" in value:
+        return value
+    digits = value[1:] if value.startswith("+") else value
+    if digits.isdigit() and 7 <= len(digits) <= 15:
+        return f"{digits}@s.whatsapp.net"
+    return value
+
+
 async def _send_whatsapp(extra, chat_id, message):
     """Send via the local WhatsApp bridge HTTP API."""
     try:
@@ -1155,10 +1177,11 @@ async def _send_whatsapp(extra, chat_id, message):
         return {"error": "aiohttp not installed. Run: pip install aiohttp"}
     try:
         bridge_port = extra.get("bridge_port", 3000)
+        normalized_chat_id = _normalize_whatsapp_chat_id(chat_id)
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 f"http://localhost:{bridge_port}/send",
-                json={"chatId": chat_id, "message": message},
+                json={"chatId": normalized_chat_id, "message": message},
                 timeout=aiohttp.ClientTimeout(total=30),
             ) as resp:
                 if resp.status == 200:
@@ -1166,7 +1189,7 @@ async def _send_whatsapp(extra, chat_id, message):
                     return {
                         "success": True,
                         "platform": "whatsapp",
-                        "chat_id": chat_id,
+                        "chat_id": normalized_chat_id,
                         "message_id": data.get("messageId"),
                     }
                 body = await resp.text()

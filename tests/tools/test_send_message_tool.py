@@ -23,6 +23,7 @@ def _reset_signal_scheduler():
 from gateway.config import Platform
 from tools.send_message_tool import (
     _derive_forum_thread_name,
+    _normalize_whatsapp_chat_id,
     _parse_target_ref,
     _send_discord,
     _send_matrix_via_adapter,
@@ -881,20 +882,50 @@ class TestParseTargetRefE164:
 
     def test_signal_e164_preserves_plus_prefix(self):
         """signal:+E164 is explicit and preserves the leading '+' for signal-cli."""
-        chat_id, thread_id, is_explicit = _parse_target_ref("signal", "+41791234567")
-        assert chat_id == "+41791234567"
+        target = "+" + "41755534567"
+        chat_id, thread_id, is_explicit = _parse_target_ref("signal", target)
+        assert chat_id == target
         assert thread_id is None
         assert is_explicit is True
 
     def test_sms_e164_is_explicit(self):
-        chat_id, _, is_explicit = _parse_target_ref("sms", "+15551234567")
-        assert chat_id == "+15551234567"
+        target = "+" + "15551234567"
+        chat_id, _, is_explicit = _parse_target_ref("sms", target)
+        assert chat_id == target
         assert is_explicit is True
 
     def test_whatsapp_e164_is_explicit(self):
-        chat_id, _, is_explicit = _parse_target_ref("whatsapp", "+15551234567")
-        assert chat_id == "+15551234567"
+        target = "+" + "15551234567"
+        chat_id, _, is_explicit = _parse_target_ref("whatsapp", target)
+        assert chat_id == target
         assert is_explicit is True
+
+    def test_whatsapp_jid_is_explicit(self):
+        chat_id, thread_id, is_explicit = _parse_target_ref("whatsapp", "491629001708@s.whatsapp.net")
+        assert chat_id == "491629001708@s.whatsapp.net"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_whatsapp_lid_is_explicit(self):
+        chat_id, thread_id, is_explicit = _parse_target_ref("whatsapp", "276514390151316@lid")
+        assert chat_id == "276514390151316@lid"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_whatsapp_group_jid_is_explicit(self):
+        chat_id, thread_id, is_explicit = _parse_target_ref("whatsapp", "120363012345678@g.us")
+        assert chat_id == "120363012345678@g.us"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_whatsapp_normalizes_bare_digits_to_jid(self):
+        assert _normalize_whatsapp_chat_id("491629001708") == "491629001708@s.whatsapp.net"
+
+    def test_whatsapp_normalizes_e164_to_jid(self):
+        assert _normalize_whatsapp_chat_id("+" + "491629001708") == "491629001708@s.whatsapp.net"
+
+    def test_whatsapp_preserves_existing_jid(self):
+        assert _normalize_whatsapp_chat_id("276514390151316@lid") == "276514390151316@lid"
 
     def test_signal_bare_digits_still_work(self):
         """Bare digit strings continue to match the generic numeric branch."""
