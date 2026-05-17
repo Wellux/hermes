@@ -117,11 +117,12 @@ def check_discord_requirements() -> bool:
 def _is_discord_channel_instance(obj: Any, type_name: str, cls: Any) -> bool:
     if obj is None:
         return False
-    try:
-        if isinstance(obj, cls):
-            return True
-    except Exception:
-        pass
+    if isinstance(cls, type):
+        try:
+            if isinstance(obj, cls):
+                return True
+        except Exception:
+            pass
     return obj.__class__.__name__ == type_name
 
 
@@ -131,6 +132,68 @@ def _is_discord_dm_channel(obj: Any) -> bool:
 
 def _is_discord_thread_channel(obj: Any) -> bool:
     return _is_discord_channel_instance(obj, "Thread", getattr(discord, "Thread", object))
+
+
+def _ensure_discord_ui_test_shims() -> None:
+    """Install tiny discord.ui stand-ins when tests provide MagicMock stubs.
+
+    In full-suite order, some tests import this module after a partial
+    ``discord`` MagicMock has been inserted into ``sys.modules``. Subclassing a
+    MagicMock ``discord.ui.View`` turns view classes themselves into MagicMocks.
+    Replace only non-type UI primitives with minimal classes before view class
+    definitions are evaluated.
+    """
+    if discord is None:
+        return
+    from types import SimpleNamespace
+
+    ui = getattr(discord, "ui", None)
+    if ui is None or not hasattr(ui, "__dict__"):
+        ui = SimpleNamespace()
+        try:
+            setattr(discord, "ui", ui)
+        except Exception:
+            return
+
+    view_cls = getattr(ui, "View", None)
+    if not isinstance(view_cls, type):
+        class _View:
+            def __init__(self, *, timeout=None, **_kwargs):
+                self.timeout = timeout
+                self.children = []
+
+            def add_item(self, item):
+                self.children.append(item)
+                return item
+
+        ui.View = _View
+
+    button_cls = getattr(ui, "Button", None)
+    if not isinstance(button_cls, type):
+        class _Button:
+            def __init__(self, *, label=None, style=None, custom_id=None, **kwargs):
+                self.label = label
+                self.style = style
+                self.custom_id = custom_id
+                self.disabled = False
+                for key, value in kwargs.items():
+                    setattr(self, key, value)
+
+        ui.Button = _Button
+
+    select_cls = getattr(ui, "Select", None)
+    if not isinstance(select_cls, type):
+        class _Select:
+            def __init__(self, *, placeholder=None, options=None, custom_id=None, **kwargs):
+                self.placeholder = placeholder
+                self.options = options or []
+                self.custom_id = custom_id
+                self.values = []
+                self.disabled = False
+                for key, value in kwargs.items():
+                    setattr(self, key, value)
+
+        ui.Select = _Select
 
 
 def _ensure_app_commands_test_shims() -> None:
@@ -4485,7 +4548,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
         thread_id = None
         parent_channel_id = None
-        is_thread = isinstance(message.channel, discord.Thread)
+        is_thread = _is_discord_thread_channel(message.channel)
         if is_thread:
             thread_id = str(message.channel.id)
             parent_channel_id = self._get_parent_channel_id(message.channel)
@@ -4977,6 +5040,7 @@ def _component_check_auth(
 
 
 if DISCORD_AVAILABLE:
+    _ensure_discord_ui_test_shims()
 
     class ExecApprovalView(discord.ui.View):
         """

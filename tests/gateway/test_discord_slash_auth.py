@@ -114,7 +114,9 @@ def _stub_discord_permissions(monkeypatch):
             self.value = value
 
     monkeypatch.setattr(discord, "Permissions", _Perm, raising=False)
-    monkeypatch.setattr(discord_platform.discord, "Permissions", _Perm, raising=False)
+    discord_mod = getattr(discord_platform, "discord", None)
+    if discord_mod is not None:
+        monkeypatch.setattr(discord_mod, "Permissions", _Perm, raising=False)
 
 
 @pytest.fixture
