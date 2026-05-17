@@ -352,17 +352,21 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         if match_jid:
             return match_jid.group(1), None, True
 
-        # Next, check for E.164 format with leading '+'
-        match_e164 = _E164_TARGET_RE.fullmatch(target_ref)
-        if match_e164:
-            # Preserve the leading '+' as expected by adapters for E.164
-            return target_ref.strip(), None, True
-
-        # Finally, normalize any other potential phone numbers (bare digits, with spaces/dashes)
+        # Normalize any potential phone numbers (bare digits, E.164, with spaces/dashes)
         # and convert to a JID format if it's purely numeric after normalization.
         normalized_ref = normalize_whatsapp_identifier(target_ref)
         if normalized_ref.isdigit():
             return f"{normalized_ref}@s.whatsapp.net", None, True
+
+        # If it's not an explicit JID and not a numeric phone number (after normalization),
+        # then it's an unresolvable reference for whatsapp.
+        return None, None, False
+    # NEW: Handle E.164 for platforms that preserve '+' (Signal, SMS)
+    if platform_name in _PHONE_PLATFORMS and platform_name != "whatsapp":
+        match_e164 = _E164_TARGET_RE.fullmatch(target_ref)
+        if match_e164:
+            return target_ref.strip(), None, True
+
     if target_ref.lstrip("-").isdigit():
         return target_ref, None, True
     # Matrix room IDs (start with !) and user IDs (start with @) are explicit
