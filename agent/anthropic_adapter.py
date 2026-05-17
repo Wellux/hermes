@@ -975,25 +975,31 @@ def resolve_anthropic_token() -> Optional[str]:
     creds = read_claude_code_credentials()
 
     # 1. Hermes-managed OAuth/setup token env var
-    token = os.getenv("ANTHROPIC_TOKEN", "").strip()
-    if token:
-        preferred = _prefer_refreshable_claude_code_token(token, creds)
-        if preferred:
-            return preferred
-        return token
+    env_anthropic_token = os.getenv("ANTHROPIC_TOKEN", "").strip()
+    if env_anthropic_token:
+        preferred_from_anthropic_env = _prefer_refreshable_claude_code_token(env_anthropic_token, creds)
+        if preferred_from_anthropic_env:
+            return preferred_from_anthropic_env
+        # If no preferred from env, env_anthropic_token is still a fallback
 
-    # 2. CLAUDE_CODE_OAUTH_TOKEN (used by Claude Code for setup-tokens)
+    # 2. CLAUDE_CODE_OAUTH_TOKEN env var
     cc_token = os.getenv("CLAUDE_CODE_OAUTH_TOKEN", "").strip()
     if cc_token:
-        preferred = _prefer_refreshable_claude_code_token(cc_token, creds)
-        if preferred:
-            return preferred
-        return cc_token
+        preferred_from_cc_env = _prefer_refreshable_claude_code_token(cc_token, creds)
+        if preferred_from_cc_env:
+            return preferred_from_cc_env
+        # If no preferred from env, cc_token is still a fallback
 
     # 3. Claude Code credential file
     resolved_claude_token = _resolve_claude_code_token_from_credentials(creds)
     if resolved_claude_token:
         return resolved_claude_token
+
+    # Fallback to static env vars if no refreshable/preferred token found
+    if env_anthropic_token:
+        return env_anthropic_token
+    if cc_token:
+        return cc_token
 
     # 4. Regular API key, or a legacy OAuth token saved in ANTHROPIC_API_KEY.
     # This remains as a compatibility fallback for pre-migration Hermes configs.
