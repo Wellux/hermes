@@ -148,8 +148,38 @@ class TestSendMessageTool:
         # Ensure the chat_id passed to _send_whatsapp is the normalized JID
         assert mock_send_whatsapp.await_args.args[1] == "1234567890@s.whatsapp.net"
 
+    def test_send_message_with_inferred_whatsapp_target_normalizes_to_jid(self, monkeypatch):
+        """
+        Verify that send_message correctly infers 'whatsapp' for a bare numeric target
+        and normalizes it to JID format before sending to the bridge.
+        """
+        mock_send_whatsapp = AsyncMock(return_value={"success": True, "message_id": "mock_id"})
+        monkeypatch.setattr("tools.send_message_tool._send_whatsapp", mock_send_whatsapp)
 
+        config = SimpleNamespace(
+            platforms={Platform.WHATSAPP: SimpleNamespace(enabled=True, token="***", extra={})},
+            get_home_channel=lambda _platform: None,
+        )
 
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "1234567890", # Bare numeric target
+                        "message": "Hello from inferred WhatsApp",
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        mock_send_whatsapp.assert_awaited_once()
+        # Ensure the chat_id passed to _send_whatsapp is the normalized JID
+        assert mock_send_whatsapp.await_args.args[1] == "1234567890@s.whatsapp.net"
+
+    def test_explicit_label_target_resolves_via_channel_directory(self):
         config, telegram_cfg = _make_config()
 
         with patch("gateway.config.load_gateway_config", return_value=config), \

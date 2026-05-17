@@ -41,6 +41,7 @@ _NUMERIC_TOPIC_RE = _TELEGRAM_TOPIC_TARGET_RE
 # downstream adapters (signal, etc.) expect.
 _PHONE_PLATFORMS = frozenset({"signal", "sms", "whatsapp"})
 _E164_TARGET_RE = re.compile(r"^\s*\+(\d{7,15})\s*$")
+_EMAIL_TARGET_RE = re.compile(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".3gp"}
 _AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".wav", ".m4a", ".flac"}
@@ -57,6 +58,12 @@ _GENERIC_SECRET_ASSIGN_RE = re.compile(
     r"\b(access_token|api[_-]?key|auth[_-]?token|signature|sig)\s*=\s*([^\s,;]+)",
     re.IGNORECASE,
 )
+
+def _match_e164_phone_platform(e164_number: str) -> str:
+    # For now, default to whatsapp for E.164 if no other platform is explicitly matched
+    # In a more complex scenario, this would check config for enabled signal/sms
+    # and choose based on user preference or availability.
+    return "whatsapp"
 
 
 def _sanitize_error_text(text) -> str:
@@ -173,16 +180,50 @@ def _handle_send(args):
     if not target or not message:
         return tool_error("Both 'target' and 'message' are required when action='send'")
 
-    parts = target.split(":", 1)
-    platform_name = parts[0].strip().lower()
-    target_ref = parts[1].strip() if len(parts) > 1 else None
+
     chat_id = None
     thread_id = None
+    is_explicit = False
 
-    if target_ref:
-        chat_id, thread_id, is_explicit = _parse_target_ref(platform_name, target_ref)
-    else:
+    # Attempt to infer platform from target if not explicitly prefixed
+    parts = target.split(":", 1)
+    if len(parts) > 1:
+        platform_name = parts[0].strip().lower()
+        target_ref = parts[1].strip()
+        is_explicit = True # Explicit prefix means we know the platform
+    else: # Bare target, try to infer
+        bare_target = target.strip()
+        if "@" in bare_target and _EMAIL_TARGET_RE.match(bare_target):
+            platform_name = "email"
+            target_ref = bare_target
+            is_explicit = True
+        elif bare_target.startswith("tel:") and _E164_TARGET_RE.match(bare_target[4:]):
+            platform_name = _match_e164_phone_platform(bare_target[4:])
+            target_ref = bare_target[4:]
+            is_explicit = True
+        elif bare_target.startswith("+") and _E164_TARGET_RE.match(bare_target):
+            platform_name = _match_e164_phone_platform(bare_target)
+            target_ref = bare_target
+            is_explicit = True
+        elif bare_target.isdigit() and 7 <= len(bare_target) <= 15:
+            # Assume WhatsApp for bare numeric targets if it's a valid phone number length
+            platform_name = "whatsapp"
+            target_ref = bare_target
+            is_explicit = True
+        else:
+            platform_name = bare_target.lower()
+            target_ref = None
+            is_explicit = False
+
+    # Now that platform_name and target_ref are (potentially) set, parse it
+    if platform_name:
+        chat_id, thread_id, is_explicit = _parse_target_ref(platform_name, target_ref or "")
+    elif not target_ref:
         is_explicit = False
+    else: # Should not happen if inference worked
+        return json.dumps(_error(f"Internal error: Could not process target {target} after inference."))
+
+
 
     # Resolve human-friendly channel names to numeric IDs
     if target_ref and not is_explicit:
