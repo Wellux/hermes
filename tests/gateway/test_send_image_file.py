@@ -230,7 +230,7 @@ class TestDiscordSendImageFile:
         mock_channel.send = AsyncMock(return_value=mock_msg)
         adapter._client.get_channel = MagicMock(return_value=mock_channel)
 
-        with patch.object(discord_mod_ref, "File", MagicMock()) as file_cls:
+        with patch('gateway.platforms.discord.discord.File') as file_cls:
             result = _run(
                 adapter.send_document(
                     chat_id="67890",
@@ -256,7 +256,7 @@ class TestDiscordSendImageFile:
         mock_channel.send = AsyncMock(return_value=mock_msg)
         adapter._client.get_channel = MagicMock(return_value=mock_channel)
 
-        with patch.object(discord_mod_ref, "File", MagicMock()) as file_cls:
+        with patch('gateway.platforms.discord.discord.File') as file_cls:
             result = _run(
                 adapter.send_video(
                     chat_id="67890",

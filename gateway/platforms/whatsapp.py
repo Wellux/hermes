@@ -48,9 +48,10 @@ def _normalize_outgoing_chat_id(chat_id: str) -> str:
     value = str(chat_id or "").strip()
     if not value or _WHATSAPP_JID_RE.fullmatch(value):
         return value
-    digits = value[1:] if value.startswith("+") else value
-    if digits.isdigit() and 7 <= len(digits) <= 15:
-        return f"{digits}@s.whatsapp.net"
+    # Strip all non-digits from the value before checking if it's a phone number.
+    cleaned_digits = re.sub(r'[^0-9]', '', value)
+    if cleaned_digits.isdigit() and 7 <= len(cleaned_digits) <= 15:
+        return f"{cleaned_digits}@s.whatsapp.net"
     return value
 
 
