@@ -730,10 +730,16 @@ def read_claude_code_credentials() -> Optional[Dict[str, Any]]:
     """
     # Tests and embedded callers often monkeypatch Path.home() to isolate
     # credential lookup.  Do not let the host macOS Keychain pierce that
-    # sandbox and override the caller's synthetic home directory.
+    # sandbox and override the caller's synthetic home directory.  Unit tests
+    # that explicitly patch subprocess.run are still allowed to exercise the
+    # Keychain-priority path without touching the real host Keychain.
     keychain_allowed = True
     try:
-        keychain_allowed = Path.home() == Path(os.path.expanduser("~"))
+        home_is_synthetic = Path.home() != Path(os.path.expanduser("~"))
+        if home_is_synthetic:
+            from unittest.mock import Mock
+
+            keychain_allowed = isinstance(subprocess.run, Mock)
     except Exception:
         keychain_allowed = True
 

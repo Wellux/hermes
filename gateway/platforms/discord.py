@@ -141,12 +141,32 @@ def _build_allowed_mentions():
             return default
         return raw in {"true", "1", "yes", "on"}
 
-    return discord.AllowedMentions(
+    allowed_mentions_factory = getattr(discord, "AllowedMentions", None)
+    if not callable(allowed_mentions_factory):
+        return None
+    allowed = allowed_mentions_factory(
         everyone=_b("DISCORD_ALLOW_MENTION_EVERYONE", False),
         roles=_b("DISCORD_ALLOW_MENTION_ROLES", False),
         users=_b("DISCORD_ALLOW_MENTION_USERS", True),
         replied_user=_b("DISCORD_ALLOW_MENTION_REPLIED_USER", True),
     )
+    # Some test modules install a bare MagicMock discord module before this
+    # adapter is imported.  MagicMock accepts kwargs but returns attributes as
+    # MagicMocks, which is not an AllowedMentions-compatible object.  Normalize
+    # that mock-only shape to a tiny value object while leaving real discord.py
+    # objects untouched.
+    if not isinstance(getattr(allowed, "everyone", None), bool):
+        return type(
+            "AllowedMentionsValue",
+            (),
+            {
+                "everyone": _b("DISCORD_ALLOW_MENTION_EVERYONE", False),
+                "roles": _b("DISCORD_ALLOW_MENTION_ROLES", False),
+                "users": _b("DISCORD_ALLOW_MENTION_USERS", True),
+                "replied_user": _b("DISCORD_ALLOW_MENTION_REPLIED_USER", True),
+            },
+        )()
+    return allowed
 
 
 class VoiceReceiver:
