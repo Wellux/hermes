@@ -1654,8 +1654,21 @@ class DiscordAdapter(BasePlatformAdapter):
             logger.error("[%s] Failed to create forum thread in %s: %s", self.name, forum_channel.id, e)
             return SendResult(success=False, error=f"Forum thread creation failed: {e}")
 
-        thread_channel = thread if hasattr(thread, "send") else getattr(thread, "thread", None)
-        thread_id = str(getattr(thread_channel, "id", getattr(thread, "id", "")))
+        # discord.py returns a ThreadWithMessage wrapper in some versions and
+        # a Thread in others. Use whichever object exposes the send coroutine.
+        message_target_channel_send = getattr(thread, "send", None)
+        if message_target_channel_send is None and hasattr(thread, "thread"):
+            message_target_channel_send = getattr(thread.thread, "send", None)
+
+        if not callable(message_target_channel_send):
+            logger.error(
+                "[%s] Created thread object has no callable 'send' method after create_thread in %s",
+                self.name,
+                forum_channel.id,
+            )
+            return SendResult(success=False, error="Created thread object has no send method.")
+
+        thread_id = str(getattr(thread, "id", ""))
         starter_msg = getattr(thread, "message", None)
         message_id = str(getattr(starter_msg, "id", thread_id)) if starter_msg else thread_id
 
@@ -1665,7 +1678,7 @@ class DiscordAdapter(BasePlatformAdapter):
         warnings: list[str] = []
         for chunk in chunks[1:]:
             try:
-                msg = await thread_channel.send(content=chunk)
+                msg = await message_target_channel_send(content=chunk)
                 message_ids.append(str(msg.id))
             except Exception as e:
                 warning = f"Failed to send follow-up chunk to forum thread {thread_id}: {e}"
