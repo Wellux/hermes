@@ -26,6 +26,13 @@ from agent.anthropic_adapter import (
 )
 from agent.transports import get_transport
 
+@pytest.fixture(autouse=True)
+def mock_keychain_access(monkeypatch):
+    """Automatically mocks macOS Keychain access for all tests in this module."""
+    monkeypatch.setattr("agent.anthropic_adapter._read_claude_code_credentials_from_keychain", lambda: None)
+    monkeypatch.setattr("platform.system", lambda: "Linux") # Ensure non-Darwin system for tests
+
+
 
 # ---------------------------------------------------------------------------
 # Auth helpers
