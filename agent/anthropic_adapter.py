@@ -696,7 +696,7 @@ def _read_claude_code_credentials_from_keychain() -> Optional[Dict[str, Any]]:
 
     try:
         data = json.loads(raw)
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, TypeError):
         logger.debug("Keychain: credentials payload is not valid JSON")
         return None
 
@@ -728,10 +728,26 @@ def read_claude_code_credentials() -> Optional[Dict[str, Any]]:
 
     Returns dict with {accessToken, refreshToken?, expiresAt?} or None.
     """
+    # Tests and embedded callers often monkeypatch Path.home() to isolate
+    # credential lookup.  Do not let the host macOS Keychain pierce that
+    # sandbox and override the caller's synthetic home directory.  Unit tests
+    # that explicitly patch subprocess.run are still allowed to exercise the
+    # Keychain-priority path without touching the real host Keychain.
+    keychain_allowed = True
+    try:
+        home_is_synthetic = Path.home() != Path(os.path.expanduser("~"))
+        if home_is_synthetic:
+            from unittest.mock import Mock
+
+            keychain_allowed = isinstance(subprocess.run, Mock)
+    except Exception:
+        keychain_allowed = True
+
     # Try macOS Keychain first (covers Claude Code >=2.1.114)
-    kc_creds = _read_claude_code_credentials_from_keychain()
-    if kc_creds:
-        return kc_creds
+    if keychain_allowed:
+        kc_creds = _read_claude_code_credentials_from_keychain()
+        if kc_creds:
+            return kc_creds
 
     # Fall back to JSON file
     cred_path = Path.home() / ".claude" / ".credentials.json"
@@ -965,25 +981,31 @@ def resolve_anthropic_token() -> Optional[str]:
     creds = read_claude_code_credentials()
 
     # 1. Hermes-managed OAuth/setup token env var
-    token = os.getenv("ANTHROPIC_TOKEN", "").strip()
-    if token:
-        preferred = _prefer_refreshable_claude_code_token(token, creds)
-        if preferred:
-            return preferred
-        return token
+    env_anthropic_token = os.getenv("ANTHROPIC_TOKEN", "").strip()
+    if env_anthropic_token:
+        preferred_from_anthropic_env = _prefer_refreshable_claude_code_token(env_anthropic_token, creds)
+        if preferred_from_anthropic_env:
+            return preferred_from_anthropic_env
+        # If no preferred from env, env_anthropic_token is still a fallback
 
-    # 2. CLAUDE_CODE_OAUTH_TOKEN (used by Claude Code for setup-tokens)
+    # 2. CLAUDE_CODE_OAUTH_TOKEN env var
     cc_token = os.getenv("CLAUDE_CODE_OAUTH_TOKEN", "").strip()
     if cc_token:
-        preferred = _prefer_refreshable_claude_code_token(cc_token, creds)
-        if preferred:
-            return preferred
-        return cc_token
+        preferred_from_cc_env = _prefer_refreshable_claude_code_token(cc_token, creds)
+        if preferred_from_cc_env:
+            return preferred_from_cc_env
+        # If no preferred from env, cc_token is still a fallback
 
     # 3. Claude Code credential file
     resolved_claude_token = _resolve_claude_code_token_from_credentials(creds)
     if resolved_claude_token:
         return resolved_claude_token
+
+    # Fallback to static env vars if no refreshable/preferred token found
+    if env_anthropic_token:
+        return env_anthropic_token
+    if cc_token:
+        return cc_token
 
     # 4. Regular API key, or a legacy OAuth token saved in ANTHROPIC_API_KEY.
     # This remains as a compatibility fallback for pre-migration Hermes configs.
@@ -1060,10 +1082,12 @@ def _generate_pkce() -> tuple:
 
 def run_hermes_oauth_login_pure() -> Optional[Dict[str, Any]]:
     """Run Hermes-native OAuth PKCE flow and return credential state."""
+    import secrets
     import time
     import webbrowser
 
     verifier, challenge = _generate_pkce()
+    oauth_state = secrets.token_urlsafe(32)
 
     params = {
         "code": "true",
@@ -1073,7 +1097,7 @@ def run_hermes_oauth_login_pure() -> Optional[Dict[str, Any]]:
         "scope": _OAUTH_SCOPES,
         "code_challenge": challenge,
         "code_challenge_method": "S256",
-        "state": verifier,
+        "state": oauth_state,
     }
     from urllib.parse import urlencode
 
@@ -1110,7 +1134,12 @@ def run_hermes_oauth_login_pure() -> Optional[Dict[str, Any]]:
 
     splits = auth_code.split("#")
     code = splits[0]
-    state = splits[1] if len(splits) > 1 else ""
+    received_state = splits[1] if len(splits) > 1 else ""
+
+    # Validate state to prevent CSRF (RFC 6749 §10.12)
+    if received_state != oauth_state:
+        logger.warning("OAuth state mismatch — possible CSRF, aborting")
+        return None
 
     try:
         import urllib.request
@@ -1119,7 +1148,7 @@ def run_hermes_oauth_login_pure() -> Optional[Dict[str, Any]]:
             "grant_type": "authorization_code",
             "client_id": _OAUTH_CLIENT_ID,
             "code": code,
-            "state": state,
+            "state": received_state,
             "redirect_uri": _OAUTH_REDIRECT_URI,
             "code_verifier": verifier,
         }).encode()

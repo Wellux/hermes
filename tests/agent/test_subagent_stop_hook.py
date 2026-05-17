@@ -54,6 +54,12 @@ def _fresh_plugin_manager():
 
 
 @pytest.fixture(autouse=True)
+def _isolate_delegation_config(monkeypatch):
+    """Hook tests patch child execution; they should not depend on live delegation config."""
+    monkeypatch.setattr("tools.delegate_tool._load_config", lambda: {})
+
+
+@pytest.fixture(autouse=True)
 def _stub_child_builder(monkeypatch):
     """Replace _build_child_agent with a MagicMock factory so delegate_task
     never transitively imports run_agent / openai.  Keeps the test runnable

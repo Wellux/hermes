@@ -969,6 +969,57 @@ def _read_configured_image_model():
     return None
 
 
+def _read_configured_image_model_for_provider(provider_name: str):
+    """Return provider-specific ``image_gen.<provider>.model`` or the global model."""
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        section = cfg.get("image_gen") if isinstance(cfg, dict) else None
+        if isinstance(section, dict):
+            provider_section = section.get(provider_name)
+            if isinstance(provider_section, dict):
+                value = provider_section.get("model")
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+    except Exception as exc:
+        logger.debug("Could not read image_gen.%s.model: %s", provider_name, exc)
+    return _read_configured_image_model()
+
+
+def _read_image_provider_order():
+    """Return configured image provider order: primary + fallback_providers."""
+    order = []
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        section = cfg.get("image_gen") if isinstance(cfg, dict) else None
+        if isinstance(section, dict):
+            primary = section.get("provider")
+            if isinstance(primary, str) and primary.strip():
+                order.append(primary.strip())
+            fallbacks = section.get("fallback_providers") or []
+            if isinstance(fallbacks, (str, dict)):
+                fallbacks = [fallbacks]
+            if isinstance(fallbacks, list):
+                for item in fallbacks:
+                    if isinstance(item, str) and item.strip():
+                        order.append(item.strip())
+                    elif isinstance(item, dict):
+                        value = item.get("provider") or item.get("name")
+                        if isinstance(value, str) and value.strip():
+                            order.append(value.strip())
+    except Exception as exc:
+        logger.debug("Could not read image provider order: %s", exc)
+    deduped = []
+    seen = set()
+    for item in order:
+        key = item.lower()
+        if key not in seen:
+            seen.add(key)
+            deduped.append(item)
+    return deduped
+
+
 def _read_configured_image_provider():
     """Return the value of ``image_gen.provider`` from config.yaml, or None.
 
@@ -1073,6 +1124,77 @@ def _handle_image_generate(args, **kw):
     if not prompt:
         return tool_error("prompt is required for image generation")
     aspect_ratio = args.get("aspect_ratio", DEFAULT_ASPECT_RATIO)
+
+    provider_order = _read_image_provider_order()
+    if len(provider_order) > 1:
+        attempts = []
+        for configured in provider_order:
+            if configured == "fal":
+                raw = image_generate_tool(prompt=prompt, aspect_ratio=aspect_ratio)
+                try:
+                    parsed = json.loads(raw)
+                except Exception:
+                    attempts.append({"provider": configured, "success": False, "error": "non-json response"})
+                    continue
+                if parsed.get("success"):
+                    parsed.setdefault("fallback_attempts", attempts)
+                    return json.dumps(parsed)
+                attempts.append({
+                    "provider": configured,
+                    "success": False,
+                    "error": parsed.get("error") or "provider returned success=false",
+                    "error_type": parsed.get("error_type"),
+                })
+                continue
+
+            try:
+                from agent.image_gen_registry import get_provider
+                from hermes_cli.plugins import _ensure_plugins_discovered
+
+                _ensure_plugins_discovered()
+                provider = get_provider(configured)
+                if provider is None:
+                    _ensure_plugins_discovered(force=True)
+                    provider = get_provider(configured)
+            except Exception as exc:
+                attempts.append({"provider": configured, "success": False, "error": str(exc), "error_type": "provider_lookup"})
+                continue
+            if provider is None:
+                attempts.append({"provider": configured, "success": False, "error": "provider not registered", "error_type": "provider_not_registered"})
+                continue
+            try:
+                if hasattr(provider, "is_available") and not provider.is_available():
+                    attempts.append({"provider": configured, "success": False, "error": "provider not available", "error_type": "provider_unavailable"})
+                    continue
+            except Exception as exc:
+                attempts.append({"provider": configured, "success": False, "error": str(exc), "error_type": "availability_check"})
+                continue
+            try:
+                kwargs = {"prompt": prompt, "aspect_ratio": aspect_ratio}
+                configured_model = _read_configured_image_model_for_provider(configured)
+                if configured_model:
+                    kwargs["model"] = configured_model
+                result = provider.generate(**kwargs)
+            except Exception as exc:
+                attempts.append({"provider": configured, "success": False, "error": str(exc), "error_type": "provider_exception"})
+                continue
+            if isinstance(result, dict) and result.get("success"):
+                result.setdefault("fallback_attempts", attempts)
+                return json.dumps(result)
+            attempts.append({
+                "provider": configured,
+                "success": False,
+                "error": result.get("error") if isinstance(result, dict) else "provider returned non-dict result",
+                "error_type": result.get("error_type") if isinstance(result, dict) else "provider_contract",
+            })
+
+        return json.dumps({
+            "success": False,
+            "image": None,
+            "error": "All configured image generation providers failed",
+            "error_type": "all_providers_failed",
+            "attempts": attempts,
+        })
 
     # Route to a plugin-registered provider if one is active (and it's
     # not the in-tree FAL path).

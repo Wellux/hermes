@@ -32,6 +32,7 @@ from tools.homeassistant_tool import (
 
 def _adapter_for(server: FakeHAServer, **extra) -> HomeAssistantAdapter:
     """Create an adapter pointed at the fake server."""
+    extra.setdefault("watch_all", True)
     config = PlatformConfig(
         enabled=True,
         token=server.token,

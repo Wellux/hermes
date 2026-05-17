@@ -48,6 +48,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import ssl
 import sys
 import urllib.error
 import urllib.request
@@ -68,6 +69,14 @@ def _get_key() -> str:
     return key
 
 
+def ssl_context():
+    try:
+        import certifi  # type: ignore
+        return ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        return ssl.create_default_context()
+
+
 def gql(query: str, variables: dict[str, Any] | None = None) -> dict[str, Any]:
     """Execute a GraphQL query against Linear. Raises on HTTP error or GraphQL errors."""
     key = _get_key()
@@ -86,7 +95,7 @@ def gql(query: str, variables: dict[str, Any] | None = None) -> dict[str, Any]:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with urllib.request.urlopen(req, timeout=30, context=ssl_context()) as resp:
             body = resp.read().decode("utf-8")
     except urllib.error.HTTPError as e:
         sys.stderr.write(f"HTTP {e.code}: {e.read().decode('utf-8', 'replace')}\n")

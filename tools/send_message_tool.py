@@ -16,6 +16,7 @@ from email.utils import formatdate
 from typing import Dict, Optional
 
 from agent.redact import redact_sensitive_text
+from gateway.whatsapp_identity import normalize_whatsapp_identifier
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,7 @@ _FEISHU_TARGET_RE = re.compile(r"^\s*((?:oc|ou|on|chat|open)_[-A-Za-z0-9]+)(?::(
 _SLACK_TARGET_RE = re.compile(r"^\s*([CGD][A-Z0-9]{8,})\s*$")
 _WEIXIN_TARGET_RE = re.compile(r"^\s*((?:wxid|gh|v\d+|wm|wb)_[A-Za-z0-9_-]+|[A-Za-z0-9._-]+@chatroom|filehelper)\s*$")
 _YUANBAO_TARGET_RE = re.compile(r"^\s*((?:group|direct):[^:]+)\s*$")
+_WHATSAPP_JID_TARGET_RE = re.compile(r"^\s*([0-9A-Za-z._-]+@(?:s\.whatsapp\.net|lid|g\.us))\s*$")
 # Discord snowflake IDs are numeric, same regex pattern as Telegram topic targets.
 _NUMERIC_TOPIC_RE = _TELEGRAM_TOPIC_TARGET_RE
 # Platforms that address recipients by phone number and accept E.164 format
@@ -39,6 +41,7 @@ _NUMERIC_TOPIC_RE = _TELEGRAM_TOPIC_TARGET_RE
 # downstream adapters (signal, etc.) expect.
 _PHONE_PLATFORMS = frozenset({"signal", "sms", "whatsapp"})
 _E164_TARGET_RE = re.compile(r"^\s*\+(\d{7,15})\s*$")
+_EMAIL_TARGET_RE = re.compile(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".3gp"}
 _AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".wav", ".m4a", ".flac"}
@@ -55,6 +58,12 @@ _GENERIC_SECRET_ASSIGN_RE = re.compile(
     r"\b(access_token|api[_-]?key|auth[_-]?token|signature|sig)\s*=\s*([^\s,;]+)",
     re.IGNORECASE,
 )
+
+def _match_e164_phone_platform(e164_number: str) -> str:
+    # For now, default to whatsapp for E.164 if no other platform is explicitly matched
+    # In a more complex scenario, this would check config for enabled signal/sms
+    # and choose based on user preference or availability.
+    return "whatsapp"
 
 
 def _sanitize_error_text(text) -> str:
@@ -171,16 +180,50 @@ def _handle_send(args):
     if not target or not message:
         return tool_error("Both 'target' and 'message' are required when action='send'")
 
-    parts = target.split(":", 1)
-    platform_name = parts[0].strip().lower()
-    target_ref = parts[1].strip() if len(parts) > 1 else None
+
     chat_id = None
     thread_id = None
+    is_explicit = False
 
-    if target_ref:
-        chat_id, thread_id, is_explicit = _parse_target_ref(platform_name, target_ref)
-    else:
+    # Attempt to infer platform from target if not explicitly prefixed
+    parts = target.split(":", 1)
+    if len(parts) > 1:
+        platform_name = parts[0].strip().lower()
+        target_ref = parts[1].strip()
+        is_explicit = True # Explicit prefix means we know the platform
+    else: # Bare target, try to infer
+        bare_target = target.strip()
+        if "@" in bare_target and _EMAIL_TARGET_RE.match(bare_target):
+            platform_name = "email"
+            target_ref = bare_target
+            is_explicit = True
+        elif bare_target.startswith("tel:") and _E164_TARGET_RE.match(bare_target[4:]):
+            platform_name = _match_e164_phone_platform(bare_target[4:])
+            target_ref = bare_target[4:]
+            is_explicit = True
+        elif bare_target.startswith("+") and _E164_TARGET_RE.match(bare_target):
+            platform_name = _match_e164_phone_platform(bare_target)
+            target_ref = bare_target
+            is_explicit = True
+        elif bare_target.isdigit() and 7 <= len(bare_target) <= 15:
+            # Assume WhatsApp for bare numeric targets if it's a valid phone number length
+            platform_name = "whatsapp"
+            target_ref = bare_target
+            is_explicit = True
+        else:
+            platform_name = bare_target.lower()
+            target_ref = None
+            is_explicit = False
+
+    # Now that platform_name and target_ref are (potentially) set, parse it
+    if platform_name:
+        chat_id, thread_id, is_explicit = _parse_target_ref(platform_name, target_ref or "")
+    elif not target_ref:
         is_explicit = False
+    else: # Should not happen if inference worked
+        return json.dumps(_error(f"Internal error: Could not process target {target} after inference."))
+
+
 
     # Resolve human-friendly channel names to numeric IDs
     if target_ref and not is_explicit:
@@ -344,12 +387,26 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         if target_ref.strip().isdigit():
             return f"group:{target_ref.strip()}", None, True
         return None, None, False
-    if platform_name in _PHONE_PLATFORMS:
-        match = _E164_TARGET_RE.fullmatch(target_ref)
-        if match:
-            # Preserve the leading '+' — signal-cli and sms/whatsapp adapters
-            # expect E.164 format for direct recipients.
+    if platform_name == "whatsapp":
+        # First, check for explicit JIDs (e.g., user@s.whatsapp.net)
+        match_jid = _WHATSAPP_JID_TARGET_RE.fullmatch(target_ref)
+        if match_jid:
+            return match_jid.group(1), None, True
+
+        # Normalize any potential phone numbers (bare digits, E.164, with spaces/dashes)
+        normalized_phone_digits = normalize_whatsapp_identifier(target_ref)
+        if normalized_phone_digits.isdigit() and 7 <= len(normalized_phone_digits) <= 15:
+            return f"{normalized_phone_digits}@s.whatsapp.net", None, True
+
+        # If it's not an explicit JID and not a numeric phone number (after normalization),
+        # then it's an unresolvable reference for whatsapp.
+        return None, None, False
+    # NEW: Handle E.164 for platforms that preserve '+' (Signal, SMS)
+    if platform_name in _PHONE_PLATFORMS and platform_name != "whatsapp":
+        match_e164 = _E164_TARGET_RE.fullmatch(target_ref)
+        if match_e164:
             return target_ref.strip(), None, True
+
     if target_ref.lstrip("-").isdigit():
         return target_ref, None, True
     # Matrix room IDs (start with !) and user IDs (start with @) are explicit
@@ -1147,6 +1204,23 @@ async def _send_slack(token, chat_id, message):
         return _error(f"Slack send failed: {e}")
 
 
+def _normalize_whatsapp_chat_id(chat_id: str) -> str:
+    """Normalize WhatsApp direct phone targets into Baileys JIDs.
+
+    Baileys' ``sendMessage`` expects a JID such as ``491629001708@s.whatsapp.net``.
+    The public send_message target parser also accepts bare digits and E.164-style
+    ``+491629001708`` for phone-based platforms, so normalize those WhatsApp-only
+    forms here while preserving already-explicit JIDs (including LID and groups).
+    """
+    value = str(chat_id or "").strip()
+    if "@" in value:
+        return value
+    digits = value[1:] if value.startswith("+") else value
+    if digits.isdigit() and 7 <= len(digits) <= 15:
+        return f"{digits}@s.whatsapp.net"
+    return value
+
+
 async def _send_whatsapp(extra, chat_id, message):
     """Send via the local WhatsApp bridge HTTP API."""
     try:
@@ -1155,10 +1229,11 @@ async def _send_whatsapp(extra, chat_id, message):
         return {"error": "aiohttp not installed. Run: pip install aiohttp"}
     try:
         bridge_port = extra.get("bridge_port", 3000)
+        normalized_chat_id = _normalize_whatsapp_chat_id(chat_id)
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 f"http://localhost:{bridge_port}/send",
-                json={"chatId": chat_id, "message": message},
+                json={"chatId": normalized_chat_id, "message": message},
                 timeout=aiohttp.ClientTimeout(total=30),
             ) as resp:
                 if resp.status == 200:
@@ -1166,7 +1241,7 @@ async def _send_whatsapp(extra, chat_id, message):
                     return {
                         "success": True,
                         "platform": "whatsapp",
-                        "chat_id": chat_id,
+                        "chat_id": normalized_chat_id,
                         "message_id": data.get("messageId"),
                     }
                 body = await resp.text()

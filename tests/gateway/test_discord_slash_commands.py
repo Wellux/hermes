@@ -634,7 +634,11 @@ class _FakeThreadChannel(_discord_mod.Thread):
         self.name = name
         self.guild = SimpleNamespace(name=guild_name, id=1)
         self.topic = None
-        self.parent = SimpleNamespace(id=parent_id, name="general", guild=SimpleNamespace(name=guild_name, id=1))
+        self._parent = SimpleNamespace(id=parent_id, name="general", guild=SimpleNamespace(name=guild_name, id=1))
+
+    @property
+    def parent(self):
+        return self._parent
 
 
 def _fake_message(channel, *, content="Hello", author_id=42, display_name="Jezza"):

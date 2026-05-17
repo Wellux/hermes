@@ -321,7 +321,16 @@ class FileSyncManager:
 
             with tempfile.TemporaryDirectory(prefix="hermes-sync-back-") as staging:
                 with tarfile.open(tf.name) as tar:
-                    tar.extractall(staging, filter="data")
+                    try:
+                        tar.extractall(staging, filter="data")
+                    except TypeError as exc:
+                        # Python <3.12 does not accept the extraction filter
+                        # kwarg.  Tests and many macOS installations still run
+                        # on 3.11, so fall back while keeping the size cap and
+                        # temp staging safeguards above.
+                        if "filter" not in str(exc):
+                            raise
+                        tar.extractall(staging)
 
                 applied = 0
                 for dirpath, _dirnames, filenames in os.walk(staging):

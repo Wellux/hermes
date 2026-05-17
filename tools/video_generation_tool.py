@@ -191,6 +191,43 @@ def _read_configured_video_model() -> Optional[str]:
     return None
 
 
+def _read_configured_video_model_for_provider(provider_name: str) -> Optional[str]:
+    section = _read_video_gen_section()
+    provider_section = section.get(provider_name)
+    if isinstance(provider_section, dict):
+        value = provider_section.get("model")
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return _read_configured_video_model()
+
+
+def _read_video_provider_order() -> List[str]:
+    section = _read_video_gen_section()
+    order: List[str] = []
+    primary = section.get("provider")
+    if isinstance(primary, str) and primary.strip():
+        order.append(primary.strip())
+    fallbacks = section.get("fallback_providers") or []
+    if isinstance(fallbacks, (str, dict)):
+        fallbacks = [fallbacks]
+    if isinstance(fallbacks, list):
+        for item in fallbacks:
+            if isinstance(item, str) and item.strip():
+                order.append(item.strip())
+            elif isinstance(item, dict):
+                value = item.get("provider") or item.get("name")
+                if isinstance(value, str) and value.strip():
+                    order.append(value.strip())
+    deduped: List[str] = []
+    seen = set()
+    for item in order:
+        key = item.lower()
+        if key not in seen:
+            seen.add(key)
+            deduped.append(item)
+    return deduped
+
+
 # ---------------------------------------------------------------------------
 # Availability check
 # ---------------------------------------------------------------------------
@@ -324,6 +361,80 @@ def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
     # endpoint but our surface always needs a prompt.
     if not prompt:
         return tool_error("prompt is required for video generation")
+
+    # Resolve provider order. With ``video_gen.fallback_providers`` configured,
+    # try each backend in order and return the first success.
+    provider_order = _read_video_provider_order()
+    if len(provider_order) > 1:
+        attempts = []
+        base_kwargs: Dict[str, Any] = {
+            "image_url": image_url,
+            "reference_image_urls": reference_image_urls,
+            "duration": duration,
+            "aspect_ratio": aspect_ratio,
+            "resolution": resolution,
+            "negative_prompt": negative_prompt,
+            "audio": audio,
+            "seed": seed,
+        }
+        base_kwargs = {k: v for k, v in base_kwargs.items() if v is not None}
+        try:
+            from agent.video_gen_registry import get_provider
+            from hermes_cli.plugins import _ensure_plugins_discovered
+            _ensure_plugins_discovered()
+        except Exception as exc:
+            return json.dumps(error_response(
+                error=f"Video provider registry unavailable: {exc}",
+                error_type="provider_lookup",
+                prompt=prompt,
+            ))
+        for configured in provider_order:
+            try:
+                provider = get_provider(configured)
+                if provider is None:
+                    _ensure_plugins_discovered(force=True)
+                    provider = get_provider(configured)
+            except Exception as exc:
+                attempts.append({"provider": configured, "success": False, "error": str(exc), "error_type": "provider_lookup"})
+                continue
+            if provider is None:
+                attempts.append({"provider": configured, "success": False, "error": "provider not registered", "error_type": "provider_not_registered"})
+                continue
+            try:
+                if hasattr(provider, "is_available") and not provider.is_available():
+                    attempts.append({"provider": configured, "success": False, "error": "provider not available", "error_type": "provider_unavailable"})
+                    continue
+            except Exception as exc:
+                attempts.append({"provider": configured, "success": False, "error": str(exc), "error_type": "availability_check"})
+                continue
+            model = model_override or _read_configured_video_model_for_provider(configured) or provider.default_model()
+            kwargs = dict(base_kwargs)
+            if model:
+                kwargs["model"] = model
+            try:
+                result = provider.generate(prompt=prompt, **kwargs)
+            except TypeError as exc:
+                attempts.append({"provider": configured, "success": False, "error": str(exc), "error_type": "provider_contract"})
+                continue
+            except Exception as exc:
+                attempts.append({"provider": configured, "success": False, "error": str(exc), "error_type": "provider_exception"})
+                continue
+            if isinstance(result, dict) and result.get("success"):
+                result.setdefault("fallback_attempts", attempts)
+                return json.dumps(result)
+            attempts.append({
+                "provider": configured,
+                "success": False,
+                "error": result.get("error") if isinstance(result, dict) else "provider returned non-dict result",
+                "error_type": result.get("error_type") if isinstance(result, dict) else "provider_contract",
+            })
+        payload = error_response(
+            error="All configured video generation providers failed",
+            error_type="all_providers_failed",
+            prompt=prompt,
+        )
+        payload["attempts"] = attempts
+        return json.dumps(payload)
 
     # Resolve the active provider.
     configured = _read_configured_video_provider()

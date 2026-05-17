@@ -237,6 +237,7 @@ async function startSocket() {
   });
 
   sock.ev.on('messages.upsert', async ({ messages, type }) => {
+    if (WHATSAPP_DEBUG) { console.log('[DEBUG bridge.js] messages.upsert event received', { type, numMessages: messages.length }); }
     // In self-chat mode, your own messages commonly arrive as 'append' rather
     // than 'notify'. Accept both and filter agent echo-backs below.
     if (type !== 'notify' && type !== 'append') return;
@@ -250,26 +251,41 @@ async function startSocket() {
       if (!msg.message) continue;
 
       const chatId = msg.key.remoteJid;
-      if (WHATSAPP_DEBUG) {
-        try {
-          console.log(JSON.stringify({
-            event: 'upsert', type,
-            fromMe: !!msg.key.fromMe, chatId,
-            senderId: msg.key.participant || chatId,
-            messageKeys: Object.keys(msg.message || {}),
-          }));
-        } catch {}
-      }
       const senderId = msg.key.participant || chatId;
       const isGroup = chatId.endsWith('@g.us');
       const senderNumber = senderId.replace(/@.*/, '');
+      if (WHATSAPP_DEBUG) {
+        try {
+          console.log(JSON.stringify({
+            event: 'upsert-raw', type,
+            fromMe: !!msg.key.fromMe, chatId,
+            senderId: msg.key.participant || chatId,
+            messageKeys: Object.keys(msg.message || {}),
+            rawMsgKey: msg.key,
+            rawMsgType: msg.message?.messageContextInfo?.messageMediaType,
+            messageContent: getMessageContent(msg),
+            isGroup,
+          }));
+        } catch (err) { console.error('Failed to log upsert-raw:', err); }
+      }
 
       // Handle fromMe messages based on mode
+      if (WHATSAPP_DEBUG) {
+        try { console.log(JSON.stringify({ event: 'msg_fromMe_check', fromMe: !!msg.key.fromMe, msgKeyId: msg.key.id, chatId })); } catch (err) { console.error('Failed to log msg_fromMe_check:', err); }
+      }
       if (msg.key.fromMe) {
-        if (isGroup || chatId.includes('status')) continue;
+        if (isGroup || chatId.includes('status')) {
+          if (WHATSAPP_DEBUG) {
+            try { console.log(JSON.stringify({ event: 'ignored', reason: 'fromMe_group_or_status', chatId })); } catch (err) { console.error('Failed to log fromMe_group_or_status:', err); }
+          }
+          continue;
+        }
 
         if (WHATSAPP_MODE === 'bot') {
           // Bot mode: separate number. ALL fromMe are echo-backs of our own replies — skip.
+          if (WHATSAPP_DEBUG) {
+            try { console.log(JSON.stringify({ event: 'ignored', reason: 'fromMe_bot_mode_echo', chatId })); } catch (err) { console.error('Failed to log fromMe_bot_mode_echo:', err); }
+          }
           continue;
         }
 
@@ -281,7 +297,23 @@ async function startSocket() {
         const myLid = (sock.user?.lid || '').replace(/:.*@/, '@').replace(/@.*/, '');
         const chatNumber = chatId.replace(/@.*/, '');
         const isSelfChat = (myNumber && chatNumber === myNumber) || (myLid && chatNumber === myLid);
-        if (!isSelfChat) continue;
+        if (WHATSAPP_DEBUG) {
+          try {
+            console.log(JSON.stringify({
+              event: 'self_chat_check', fromMe: !!msg.key.fromMe, chatId, myNumber, myLid, chatNumber, isSelfChat, sockUserId: sock.user?.id, sockUserLid: sock.user?.lid,
+            }));
+          } catch (err) { console.error('Failed to log self_chat_check:', err); }
+        }
+        if (!isSelfChat) {
+          if (WHATSAPP_DEBUG) {
+            try {
+              console.log(JSON.stringify({
+                event: 'ignored', reason: 'self_chat_mismatch', chatId, senderId,
+              }));
+            } catch (err) { console.error('Failed to log self_chat_mismatch:', err); }
+          }
+          continue;
+        }
       }
 
       // Handle !fromMe messages (from other people) based on mode.
@@ -291,15 +323,25 @@ async function startSocket() {
       // to arbitrary incoming messages (#8389).
       if (!msg.key.fromMe) {
         if (WHATSAPP_MODE === 'self-chat') {
+          if (!matchesAllowedUser(senderId, ALLOWED_USERS, SESSION_DIR)) {
+            try {
+              console.log(JSON.stringify({
+                event: 'ignored',
+                reason: 'self_chat_non_self_allowlist_mismatch',
+                chatId,
+                senderId,
+              }));
+            } catch (err) { console.error('Failed to log self_chat_non_self_allowlist_mismatch:', err); }
+            continue;
+          }
           try {
             console.log(JSON.stringify({
-              event: 'ignored',
-              reason: 'self_chat_mode_rejects_non_self',
+              event: 'accepted',
+              reason: 'self_chat_non_self_matches_allowlist',
               chatId,
               senderId,
             }));
-          } catch {}
-          continue;
+          } catch (err) { console.error('Failed to log self_chat_mode_rejects_non_self:', err); }
         }
         if (!matchesAllowedUser(senderId, ALLOWED_USERS, SESSION_DIR)) {
           try {
@@ -309,7 +351,7 @@ async function startSocket() {
               chatId,
               senderId,
             }));
-          } catch {}
+          } catch (err) { console.error('Failed to log allowlist_mismatch:', err); }
           continue;
         }
       }

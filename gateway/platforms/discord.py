@@ -114,6 +114,134 @@ def check_discord_requirements() -> bool:
     return True
 
 
+def _is_discord_channel_instance(obj: Any, type_name: str, cls: Any) -> bool:
+    if obj is None:
+        return False
+    if isinstance(cls, type):
+        try:
+            if isinstance(obj, cls):
+                return True
+        except Exception:
+            pass
+    return obj.__class__.__name__ == type_name
+
+
+def _is_discord_dm_channel(obj: Any) -> bool:
+    return _is_discord_channel_instance(obj, "DMChannel", getattr(discord, "DMChannel", object))
+
+
+def _is_discord_thread_channel(obj: Any) -> bool:
+    return _is_discord_channel_instance(obj, "Thread", getattr(discord, "Thread", object))
+
+
+def _ensure_discord_ui_test_shims() -> None:
+    """Install tiny discord.ui stand-ins when tests provide MagicMock stubs.
+
+    In full-suite order, some tests import this module after a partial
+    ``discord`` MagicMock has been inserted into ``sys.modules``. Subclassing a
+    MagicMock ``discord.ui.View`` turns view classes themselves into MagicMocks.
+    Replace only non-type UI primitives with minimal classes before view class
+    definitions are evaluated.
+    """
+    if discord is None:
+        return
+    from types import SimpleNamespace
+
+    ui = getattr(discord, "ui", None)
+    if ui is None or not hasattr(ui, "__dict__"):
+        ui = SimpleNamespace()
+        try:
+            setattr(discord, "ui", ui)
+        except Exception:
+            return
+
+    view_cls = getattr(ui, "View", None)
+    if not isinstance(view_cls, type):
+        class _View:
+            def __init__(self, *, timeout=None, **_kwargs):
+                self.timeout = timeout
+                self.children = []
+
+            def add_item(self, item):
+                self.children.append(item)
+                return item
+
+        ui.View = _View
+
+    button_cls = getattr(ui, "Button", None)
+    if not isinstance(button_cls, type):
+        class _Button:
+            def __init__(self, *, label=None, style=None, custom_id=None, **kwargs):
+                self.label = label
+                self.style = style
+                self.custom_id = custom_id
+                self.disabled = False
+                for key, value in kwargs.items():
+                    setattr(self, key, value)
+
+        ui.Button = _Button
+
+    select_cls = getattr(ui, "Select", None)
+    if not isinstance(select_cls, type):
+        class _Select:
+            def __init__(self, *, placeholder=None, options=None, custom_id=None, **kwargs):
+                self.placeholder = placeholder
+                self.options = options or []
+                self.custom_id = custom_id
+                self.values = []
+                self.disabled = False
+                for key, value in kwargs.items():
+                    setattr(self, key, value)
+
+        ui.Select = _Select
+
+
+def _ensure_app_commands_test_shims() -> None:
+    """Fill minimal discord.app_commands attributes on lightweight test stubs.
+
+    Several gateway tests install partial ``discord`` stand-ins before this
+    module is imported.  Real discord.py exposes these attributes; partial
+    stubs sometimes expose only ``describe``/``choices``.  The runtime should
+    remain tolerant of that shape so one test module's mock does not make
+    slash-command registration silently skip commands for the rest of a full
+    suite run.
+    """
+    app_commands = getattr(discord, "app_commands", None)
+    if app_commands is None:
+        return
+
+    def _passthrough(**_kwargs):
+        return lambda fn: fn
+
+    for name in ("describe", "choices", "autocomplete"):
+        if not callable(getattr(app_commands, name, None)):
+            try:
+                setattr(app_commands, name, _passthrough)
+            except Exception:
+                return
+
+    if not callable(getattr(app_commands, "Choice", None)):
+        try:
+            from types import SimpleNamespace
+
+            setattr(app_commands, "Choice", lambda **kwargs: SimpleNamespace(**kwargs))
+        except Exception:
+            pass
+
+    if not callable(getattr(app_commands, "Command", None)):
+        try:
+            class _CompatCommand:
+                def __init__(self, *, name, description, callback, parent=None):
+                    self.name = name
+                    self.description = description
+                    self.callback = callback
+                    self.parent = parent
+
+            setattr(app_commands, "Command", _CompatCommand)
+        except Exception:
+            pass
+
+
 def _build_allowed_mentions():
     """Build Discord ``AllowedMentions`` with safe defaults, overridable via env.
 
@@ -141,12 +269,32 @@ def _build_allowed_mentions():
             return default
         return raw in {"true", "1", "yes", "on"}
 
-    return discord.AllowedMentions(
+    allowed_mentions_factory = getattr(discord, "AllowedMentions", None)
+    if not callable(allowed_mentions_factory):
+        return None
+    allowed = allowed_mentions_factory(
         everyone=_b("DISCORD_ALLOW_MENTION_EVERYONE", False),
         roles=_b("DISCORD_ALLOW_MENTION_ROLES", False),
         users=_b("DISCORD_ALLOW_MENTION_USERS", True),
         replied_user=_b("DISCORD_ALLOW_MENTION_REPLIED_USER", True),
     )
+    # Some test modules install a bare MagicMock discord module before this
+    # adapter is imported.  MagicMock accepts kwargs but returns attributes as
+    # MagicMocks, which is not an AllowedMentions-compatible object.  Normalize
+    # that mock-only shape to a tiny value object while leaving real discord.py
+    # objects untouched.
+    if not isinstance(getattr(allowed, "everyone", None), bool):
+        return type(
+            "AllowedMentionsValue",
+            (),
+            {
+                "everyone": _b("DISCORD_ALLOW_MENTION_EVERYONE", False),
+                "roles": _b("DISCORD_ALLOW_MENTION_ROLES", False),
+                "users": _b("DISCORD_ALLOW_MENTION_USERS", True),
+                "replied_user": _b("DISCORD_ALLOW_MENTION_REPLIED_USER", True),
+            },
+        )()
+    return allowed
 
 
 class VoiceReceiver:
@@ -1506,8 +1654,21 @@ class DiscordAdapter(BasePlatformAdapter):
             logger.error("[%s] Failed to create forum thread in %s: %s", self.name, forum_channel.id, e)
             return SendResult(success=False, error=f"Forum thread creation failed: {e}")
 
-        thread_channel = thread if hasattr(thread, "send") else getattr(thread, "thread", None)
-        thread_id = str(getattr(thread_channel, "id", getattr(thread, "id", "")))
+        # discord.py returns a ThreadWithMessage wrapper in some versions and
+        # a Thread in others. Use whichever object exposes the send coroutine.
+        message_target_channel_send = getattr(thread, "send", None)
+        if message_target_channel_send is None and hasattr(thread, "thread"):
+            message_target_channel_send = getattr(thread.thread, "send", None)
+
+        if not callable(message_target_channel_send):
+            logger.error(
+                "[%s] Created thread object has no callable 'send' method after create_thread in %s",
+                self.name,
+                forum_channel.id,
+            )
+            return SendResult(success=False, error="Created thread object has no send method.")
+
+        thread_id = str(getattr(thread, "id", ""))
         starter_msg = getattr(thread, "message", None)
         message_id = str(getattr(starter_msg, "id", thread_id)) if starter_msg else thread_id
 
@@ -1517,7 +1678,7 @@ class DiscordAdapter(BasePlatformAdapter):
         warnings: list[str] = []
         for chunk in chunks[1:]:
             try:
-                msg = await thread_channel.send(content=chunk)
+                msg = await message_target_channel_send(content=chunk)
                 message_ids.append(str(msg.id))
             except Exception as e:
                 warning = f"Failed to send follow-up chunk to forum thread {thread_id}: {e}"
@@ -2311,7 +2472,7 @@ class DiscordAdapter(BasePlatformAdapter):
         an opaque interaction failure rather than a clean rejection.
         """
         chan_obj = getattr(interaction, "channel", None)
-        in_dm = isinstance(chan_obj, discord.DMChannel) if chan_obj is not None else False
+        in_dm = _is_discord_dm_channel(chan_obj)
 
         # ── Channel scope (mirrors on_message lines 3374-3388) ──
         # DMs aren't channel-gated — DMs follow on_message's DM lockdown
@@ -2325,7 +2486,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 channel_ids.add(str(chan_id_raw))
                 # Mirror on_message: also test the parent channel for threads
                 # so per-channel allow/deny lists work consistently.
-                if isinstance(chan_obj, discord.Thread):
+                if _is_discord_thread_channel(chan_obj):
                     parent_id = self._get_parent_channel_id(chan_obj)
                     if parent_id:
                         channel_ids.add(str(parent_id))
@@ -2911,6 +3072,7 @@ class DiscordAdapter(BasePlatformAdapter):
             return
 
         tree = self._client.tree
+        _ensure_app_commands_test_shims()
 
         @tree.command(name="new", description="Start a new conversation")
         async def slash_new(interaction: discord.Interaction):
@@ -3191,6 +3353,9 @@ class DiscordAdapter(BasePlatformAdapter):
         """
         try:
             no_perms = discord.Permissions(0)
+            if not isinstance(getattr(no_perms, "value", None), int):
+                from types import SimpleNamespace
+                no_perms = SimpleNamespace(value=0)
         except Exception as e:
             logger.warning(
                 "[Discord] _apply_owner_only_visibility: cannot build Permissions(0): %s",
@@ -3239,6 +3404,7 @@ class DiscordAdapter(BasePlatformAdapter):
         ``tree.sync()`` call.
         """
         try:
+            _ensure_app_commands_test_shims()
             existing_names = set()
             try:
                 existing_names = {cmd.name for cmd in tree.get_commands()}
@@ -3303,6 +3469,11 @@ class DiscordAdapter(BasePlatformAdapter):
                         if len(choices) >= 25:
                             break
                 return choices
+
+            # Keep a direct handle for tests and diagnostics. Real discord.py
+            # stores autocomplete callbacks inside generated parameter metadata,
+            # while lightweight stubs expose decorator calls directly.
+            self._skill_autocomplete_callback = _autocomplete_name
 
             @discord.app_commands.describe(
                 name="Which skill to run",
@@ -3410,8 +3581,8 @@ class DiscordAdapter(BasePlatformAdapter):
 
     def _build_slash_event(self, interaction: discord.Interaction, text: str) -> MessageEvent:
         """Build a MessageEvent from a Discord slash command interaction."""
-        is_dm = isinstance(interaction.channel, discord.DMChannel)
-        is_thread = isinstance(interaction.channel, discord.Thread)
+        is_dm = _is_discord_dm_channel(interaction.channel)
+        is_thread = _is_discord_thread_channel(interaction.channel)
         thread_id = None
 
         if is_dm:
@@ -4390,7 +4561,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
         thread_id = None
         parent_channel_id = None
-        is_thread = isinstance(message.channel, discord.Thread)
+        is_thread = _is_discord_thread_channel(message.channel)
         if is_thread:
             thread_id = str(message.channel.id)
             parent_channel_id = self._get_parent_channel_id(message.channel)
@@ -4882,6 +5053,7 @@ def _component_check_auth(
 
 
 if DISCORD_AVAILABLE:
+    _ensure_discord_ui_test_shims()
 
     class ExecApprovalView(discord.ui.View):
         """

@@ -107,12 +107,16 @@ def _stub_discord_permissions(monkeypatch):
     bitfield value regardless of whether real discord.py or a sibling test
     module's MagicMock is loaded."""
     import discord
+    import gateway.platforms.discord as discord_platform
 
     class _Perm:
         def __init__(self, value=0, **_):
             self.value = value
 
-    monkeypatch.setattr(discord, "Permissions", _Perm)
+    monkeypatch.setattr(discord, "Permissions", _Perm, raising=False)
+    discord_mod = getattr(discord_platform, "discord", None)
+    if discord_mod is not None:
+        monkeypatch.setattr(discord_mod, "Permissions", _Perm, raising=False)
 
 
 @pytest.fixture
@@ -141,9 +145,15 @@ def _make_interaction(
     response = SimpleNamespace(send_message=AsyncMock(), defer=AsyncMock())
 
     if in_dm:
-        channel = discord.DMChannel()
+        try:
+            channel = discord.DMChannel()
+        except TypeError:
+            channel = object.__new__(discord.DMChannel)
     elif in_thread:
-        channel = discord.Thread()
+        try:
+            channel = discord.Thread()
+        except TypeError:
+            channel = object.__new__(discord.Thread)
         channel.id = channel_id
         channel.parent_id = parent_channel_id
     elif channel_id is None:
@@ -573,6 +583,7 @@ def _capture_skill_registration(adapter, monkeypatch, entries):
     callback through it is the direct route in tests.
     """
     import discord
+    import gateway.platforms.discord as discord_platform
 
     captured: dict = {}
 
@@ -599,6 +610,10 @@ def _capture_skill_registration(adapter, monkeypatch, entries):
         discord.app_commands, "autocomplete", capture_autocomplete,
         raising=False,
     )
+    monkeypatch.setattr(
+        discord_platform.discord.app_commands, "autocomplete", capture_autocomplete,
+        raising=False,
+    )
 
     registered: list = []
 
@@ -611,7 +626,9 @@ def _capture_skill_registration(adapter, monkeypatch, entries):
 
     adapter._register_skill_group(_Tree())
     assert registered, "_register_skill_group did not register a command"
-    return registered[0].callback, captured["autocomplete"]
+    autocomplete = captured.get("autocomplete") or getattr(adapter, "_skill_autocomplete_callback", None)
+    assert autocomplete is not None, "_register_skill_group did not expose autocomplete callback"
+    return registered[0].callback, autocomplete
 
 
 @pytest.mark.asyncio

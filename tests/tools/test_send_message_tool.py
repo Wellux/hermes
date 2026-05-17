@@ -23,6 +23,7 @@ def _reset_signal_scheduler():
 from gateway.config import Platform
 from tools.send_message_tool import (
     _derive_forum_thread_name,
+    _normalize_whatsapp_chat_id,
     _parse_target_ref,
     _send_discord,
     _send_matrix_via_adapter,
@@ -113,7 +114,72 @@ class TestSendMessageTool:
         send_mock.assert_not_awaited()
         mirror_mock.assert_not_called()
 
-    def test_resolved_telegram_topic_name_preserves_thread_id(self):
+    def test_whatsapp_bare_phone_number_is_normalized_to_jid(self):
+        chat_id, thread_id, is_explicit = _parse_target_ref("whatsapp", "1234567890")
+        assert chat_id == "1234567890@s.whatsapp.net"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_send_message_whatsapp_bare_phone_number_end_to_end_normalization(self, monkeypatch):
+        """Verify end-to-end normalization of bare WhatsApp phone numbers to JID during send_message."""
+        mock_send_whatsapp = AsyncMock(return_value={"success": True, "message_id": "mock_id"})
+        monkeypatch.setattr("tools.send_message_tool._send_whatsapp", mock_send_whatsapp)
+
+        config = SimpleNamespace(
+            platforms={Platform.WHATSAPP: SimpleNamespace(enabled=True, token="***", extra={})},
+            get_home_channel=lambda _platform: None,
+        )
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "whatsapp:1234567890",
+                        "message": "Hello from Hermes",
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        mock_send_whatsapp.assert_awaited_once()
+        # Ensure the chat_id passed to _send_whatsapp is the normalized JID
+        assert mock_send_whatsapp.await_args.args[1] == "1234567890@s.whatsapp.net"
+
+    def test_send_message_with_inferred_whatsapp_target_normalizes_to_jid(self, monkeypatch):
+        """
+        Verify that send_message correctly infers 'whatsapp' for a bare numeric target
+        and normalizes it to JID format before sending to the bridge.
+        """
+        mock_send_whatsapp = AsyncMock(return_value={"success": True, "message_id": "mock_id"})
+        monkeypatch.setattr("tools.send_message_tool._send_whatsapp", mock_send_whatsapp)
+
+        config = SimpleNamespace(
+            platforms={Platform.WHATSAPP: SimpleNamespace(enabled=True, token="***", extra={})},
+            get_home_channel=lambda _platform: None,
+        )
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "1234567890", # Bare numeric target
+                        "message": "Hello from inferred WhatsApp",
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        mock_send_whatsapp.assert_awaited_once()
+        # Ensure the chat_id passed to _send_whatsapp is the normalized JID
+        assert mock_send_whatsapp.await_args.args[1] == "1234567890@s.whatsapp.net"
+
+    def test_explicit_label_target_resolves_via_channel_directory(self):
         config, telegram_cfg = _make_config()
 
         with patch("gateway.config.load_gateway_config", return_value=config), \
@@ -881,20 +947,50 @@ class TestParseTargetRefE164:
 
     def test_signal_e164_preserves_plus_prefix(self):
         """signal:+E164 is explicit and preserves the leading '+' for signal-cli."""
-        chat_id, thread_id, is_explicit = _parse_target_ref("signal", "+41791234567")
-        assert chat_id == "+41791234567"
+        target = "+" + "41755534567"
+        chat_id, thread_id, is_explicit = _parse_target_ref("signal", target)
+        assert chat_id == target
         assert thread_id is None
         assert is_explicit is True
 
     def test_sms_e164_is_explicit(self):
-        chat_id, _, is_explicit = _parse_target_ref("sms", "+15551234567")
-        assert chat_id == "+15551234567"
+        target = "+" + "15551234567"
+        chat_id, _, is_explicit = _parse_target_ref("sms", target)
+        assert chat_id == target
         assert is_explicit is True
 
     def test_whatsapp_e164_is_explicit(self):
-        chat_id, _, is_explicit = _parse_target_ref("whatsapp", "+15551234567")
-        assert chat_id == "+15551234567"
+        target = "+" + "15551234567"
+        chat_id, _, is_explicit = _parse_target_ref("whatsapp", target)
+        assert chat_id == "15551234567@s.whatsapp.net"
         assert is_explicit is True
+
+    def test_whatsapp_jid_is_explicit(self):
+        chat_id, thread_id, is_explicit = _parse_target_ref("whatsapp", "491629001708@s.whatsapp.net")
+        assert chat_id == "491629001708@s.whatsapp.net"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_whatsapp_lid_is_explicit(self):
+        chat_id, thread_id, is_explicit = _parse_target_ref("whatsapp", "276514390151316@lid")
+        assert chat_id == "276514390151316@lid"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_whatsapp_group_jid_is_explicit(self):
+        chat_id, thread_id, is_explicit = _parse_target_ref("whatsapp", "120363012345678@g.us")
+        assert chat_id == "120363012345678@g.us"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_whatsapp_normalizes_bare_digits_to_jid(self):
+        assert _normalize_whatsapp_chat_id("491629001708") == "491629001708@s.whatsapp.net"
+
+    def test_whatsapp_normalizes_e164_to_jid(self):
+        assert _normalize_whatsapp_chat_id("+" + "491629001708") == "491629001708@s.whatsapp.net"
+
+    def test_whatsapp_preserves_existing_jid(self):
+        assert _normalize_whatsapp_chat_id("276514390151316@lid") == "276514390151316@lid"
 
     def test_signal_bare_digits_still_work(self):
         """Bare digit strings continue to match the generic numeric branch."""

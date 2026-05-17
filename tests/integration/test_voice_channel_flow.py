@@ -8,14 +8,29 @@ Requires: PyNaCl>=1.5.0, discord.py[voice] (opus codec)
 """
 
 import struct
+import sys
 import time
 import pytest
 
 pytestmark = pytest.mark.integration
 
+# Other gateway unit tests install lightweight discord mocks in sys.modules.
+# These integration tests require the real discord.py package with voice/opus
+# support, so clear mock-only modules before dependency probing.
+_existing_discord = sys.modules.get("discord")
+if _existing_discord is not None and not getattr(_existing_discord, "__file__", None):
+    for _name in list(sys.modules):
+        if (
+            _name == "discord"
+            or _name.startswith("discord.")
+            or _name == "gateway.platforms.discord"
+        ):
+            sys.modules.pop(_name, None)
+
 # Skip entire module if voice deps are missing
 pytest.importorskip("nacl.secret", reason="PyNaCl required for voice integration tests")
 discord = pytest.importorskip("discord", reason="discord.py required for voice integration tests")
+pytest.importorskip("discord.opus", reason="discord.py voice opus module required")
 
 import nacl.secret
 
