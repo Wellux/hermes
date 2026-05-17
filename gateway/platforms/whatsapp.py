@@ -34,7 +34,8 @@ from hermes_constants import get_hermes_dir
 logger = logging.getLogger(__name__)
 
 
-_WHATSAPP_JID_RE = re.compile(r"^[0-9A-Za-z._-]+@(s\.whatsapp\.net|lid|g\.us)$")
+_WHATSAPP_JID_RE = re.compile(r"^[0-9A-Za-z._-]+@(s\.whatsapp.net|lid|g\.us)$")
+_PHONE_NUMBER_PATTERN = re.compile(r"^\\+?[0-9()\\s-]{7,15}$")
 
 
 def _normalize_outgoing_chat_id(chat_id: str) -> str:
@@ -46,9 +47,16 @@ def _normalize_outgoing_chat_id(chat_id: str) -> str:
     and group JIDs.
     """
     value = str(chat_id or "").strip()
-    if not value or _WHATSAPP_JID_RE.fullmatch(value):
+    if not value:
+        return ""
+    if _WHATSAPP_JID_RE.fullmatch(value):
         return value
-    # Strip all non-digits from the value before checking if it's a phone number.
+
+    # If the value contains any alphabetic characters, it's likely not a phone number
+    if re.search(r'[a-zA-Z]', value):
+        return value
+
+    # Now, we know it doesn't contain letters. Proceed as before.
     cleaned_digits = re.sub(r'[^0-9]', '', value)
     if cleaned_digits.isdigit() and 7 <= len(cleaned_digits) <= 15:
         return f"{cleaned_digits}@s.whatsapp.net"
