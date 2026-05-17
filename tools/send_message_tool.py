@@ -353,10 +353,9 @@ def _parse_target_ref(platform_name: str, target_ref: str):
             return match_jid.group(1), None, True
 
         # Normalize any potential phone numbers (bare digits, E.164, with spaces/dashes)
-        # and convert to a JID format if it's purely numeric after normalization.
-        normalized_ref = normalize_whatsapp_identifier(target_ref)
-        if normalized_ref.isdigit():
-            return f"{normalized_ref}@s.whatsapp.net", None, True
+        normalized_phone_digits = normalize_whatsapp_identifier(target_ref)
+        if normalized_phone_digits.isdigit() and 7 <= len(normalized_phone_digits) <= 15:
+            return f"{normalized_phone_digits}@s.whatsapp.net", None, True
 
         # If it's not an explicit JID and not a numeric phone number (after normalization),
         # then it's an unresolvable reference for whatsapp.
