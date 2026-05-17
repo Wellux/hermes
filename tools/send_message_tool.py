@@ -16,6 +16,7 @@ from email.utils import formatdate
 from typing import Dict, Optional
 
 from agent.redact import redact_sensitive_text
+from gateway.whatsapp_identity import normalize_whatsapp_identifier
 
 logger = logging.getLogger(__name__)
 
@@ -346,18 +347,22 @@ def _parse_target_ref(platform_name: str, target_ref: str):
             return f"group:{target_ref.strip()}", None, True
         return None, None, False
     if platform_name == "whatsapp":
-        match = _WHATSAPP_JID_TARGET_RE.fullmatch(target_ref)
-        if match:
-            return match.group(1), None, True
-    # Normalize bare digits to JID format for WhatsApp.
-    if target_ref.strip().isdigit():
-        return f"{target_ref.strip()}@s.whatsapp.net", None, True
-    if platform_name in _PHONE_PLATFORMS:
-        match = _E164_TARGET_RE.fullmatch(target_ref)
-        if match:
-            # Preserve the leading '+' — signal-cli and sms/whatsapp adapters
-            # expect E.164 format for direct recipients.
+        # First, check for explicit JIDs (e.g., user@s.whatsapp.net)
+        match_jid = _WHATSAPP_JID_TARGET_RE.fullmatch(target_ref)
+        if match_jid:
+            return match_jid.group(1), None, True
+
+        # Next, check for E.164 format with leading '+'
+        match_e164 = _E164_TARGET_RE.fullmatch(target_ref)
+        if match_e164:
+            # Preserve the leading '+' as expected by adapters for E.164
             return target_ref.strip(), None, True
+
+        # Finally, normalize any other potential phone numbers (bare digits, with spaces/dashes)
+        # and convert to a JID format if it's purely numeric after normalization.
+        normalized_ref = normalize_whatsapp_identifier(target_ref)
+        if normalized_ref.isdigit():
+            return f"{normalized_ref}@s.whatsapp.net", None, True
     if target_ref.lstrip("-").isdigit():
         return target_ref, None, True
     # Matrix room IDs (start with !) and user IDs (start with @) are explicit
