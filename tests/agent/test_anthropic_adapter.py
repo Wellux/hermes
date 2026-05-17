@@ -158,6 +158,7 @@ class TestBuildAnthropicClient:
 
 class TestReadClaudeCodeCredentials:
     def test_reads_valid_credentials(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("platform.system", lambda: "Linux")
         cred_file = tmp_path / ".claude" / ".credentials.json"
         cred_file.parent.mkdir(parents=True)
         cred_file.write_text(json.dumps({
@@ -187,6 +188,7 @@ class TestReadClaudeCodeCredentials:
         assert read_claude_code_credentials() is None
 
     def test_returns_none_for_missing_oauth_key(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("platform.system", lambda: "Linux")
         cred_file = tmp_path / ".claude" / ".credentials.json"
         cred_file.parent.mkdir(parents=True)
         cred_file.write_text(json.dumps({"someOtherKey": {}}))
@@ -194,6 +196,7 @@ class TestReadClaudeCodeCredentials:
         assert read_claude_code_credentials() is None
 
     def test_returns_none_for_empty_access_token(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("platform.system", lambda: "Linux")
         cred_file = tmp_path / ".claude" / ".credentials.json"
         cred_file.parent.mkdir(parents=True)
         cred_file.write_text(json.dumps({
@@ -266,6 +269,7 @@ class TestResolveAnthropicToken:
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        monkeypatch.setattr("platform.system", lambda: "Linux")
         cred_file = tmp_path / ".claude" / ".credentials.json"
         cred_file.parent.mkdir(parents=True)
         cred_file.write_text(json.dumps({
@@ -282,6 +286,7 @@ class TestResolveAnthropicToken:
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.setenv("ANTHROPIC_TOKEN", "sk-ant-oat01-static-token")
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        monkeypatch.setattr("platform.system", lambda: "Linux")
         cred_file = tmp_path / ".claude" / ".credentials.json"
         cred_file.parent.mkdir(parents=True)
         cred_file.write_text(json.dumps({
@@ -338,6 +343,7 @@ class TestRefreshOauthToken:
 
         assert result == "new-token-abc"
         # Verify credentials were written back
+        monkeypatch.setattr("platform.system", lambda: "Linux")
         cred_file = tmp_path / ".claude" / ".credentials.json"
         assert cred_file.exists()
         written = json.loads(cred_file.read_text())
@@ -359,6 +365,7 @@ class TestWriteClaudeCodeCredentials:
     def test_writes_new_file(self, tmp_path, monkeypatch):
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
         _write_claude_code_credentials("tok", "ref", 12345)
+        monkeypatch.setattr("platform.system", lambda: "Linux")
         cred_file = tmp_path / ".claude" / ".credentials.json"
         assert cred_file.exists()
         data = json.loads(cred_file.read_text())
@@ -386,6 +393,7 @@ class TestResolveWithRefresh:
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
 
         # Set up expired creds with a refresh token
+        monkeypatch.setattr("platform.system", lambda: "Linux")
         cred_file = tmp_path / ".claude" / ".credentials.json"
         cred_file.parent.mkdir(parents=True)
         cred_file.write_text(json.dumps({
@@ -408,6 +416,7 @@ class TestResolveWithRefresh:
         monkeypatch.setenv("ANTHROPIC_TOKEN", "sk-ant-oat01-expired-env-token")
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
 
+        monkeypatch.setattr("platform.system", lambda: "Linux")
         cred_file = tmp_path / ".claude" / ".credentials.json"
         cred_file.parent.mkdir(parents=True)
         cred_file.write_text(json.dumps({
@@ -438,6 +447,7 @@ class TestRunOauthSetupToken:
         monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
 
         # Pre-create credential files that will be found after subprocess
+        monkeypatch.setattr("platform.system", lambda: "Linux")
         cred_file = tmp_path / ".claude" / ".credentials.json"
         cred_file.parent.mkdir(parents=True)
         cred_file.write_text(json.dumps({
