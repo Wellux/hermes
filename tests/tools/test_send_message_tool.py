@@ -120,6 +120,35 @@ class TestSendMessageTool:
         assert thread_id is None
         assert is_explicit is True
 
+    def test_send_message_whatsapp_bare_phone_number_end_to_end_normalization(self, monkeypatch):
+        """Verify end-to-end normalization of bare WhatsApp phone numbers to JID during send_message."""
+        mock_send_whatsapp = AsyncMock(return_value={"success": True, "message_id": "mock_id"})
+        monkeypatch.setattr("tools.send_message_tool._send_whatsapp", mock_send_whatsapp)
+
+        config = SimpleNamespace(
+            platforms={Platform.WHATSAPP: SimpleNamespace(enabled=True, token="***", extra={})},
+            get_home_channel=lambda _platform: None,
+        )
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "whatsapp:1234567890",
+                        "message": "Hello from Hermes",
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        mock_send_whatsapp.assert_awaited_once()
+        # Ensure the chat_id passed to _send_whatsapp is the normalized JID
+        assert mock_send_whatsapp.await_args.args[1] == "1234567890@s.whatsapp.net"
+
+
 
         config, telegram_cfg = _make_config()
 
@@ -903,7 +932,7 @@ class TestParseTargetRefE164:
     def test_whatsapp_e164_is_explicit(self):
         target = "+" + "15551234567"
         chat_id, _, is_explicit = _parse_target_ref("whatsapp", target)
-        assert chat_id == target
+        assert chat_id == "15551234567@s.whatsapp.net"
         assert is_explicit is True
 
     def test_whatsapp_jid_is_explicit(self):
