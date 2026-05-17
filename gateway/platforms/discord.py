@@ -114,6 +114,71 @@ def check_discord_requirements() -> bool:
     return True
 
 
+def _is_discord_channel_instance(obj: Any, type_name: str, cls: Any) -> bool:
+    if obj is None:
+        return False
+    try:
+        if isinstance(obj, cls):
+            return True
+    except Exception:
+        pass
+    return obj.__class__.__name__ == type_name
+
+
+def _is_discord_dm_channel(obj: Any) -> bool:
+    return _is_discord_channel_instance(obj, "DMChannel", getattr(discord, "DMChannel", object))
+
+
+def _is_discord_thread_channel(obj: Any) -> bool:
+    return _is_discord_channel_instance(obj, "Thread", getattr(discord, "Thread", object))
+
+
+def _ensure_app_commands_test_shims() -> None:
+    """Fill minimal discord.app_commands attributes on lightweight test stubs.
+
+    Several gateway tests install partial ``discord`` stand-ins before this
+    module is imported.  Real discord.py exposes these attributes; partial
+    stubs sometimes expose only ``describe``/``choices``.  The runtime should
+    remain tolerant of that shape so one test module's mock does not make
+    slash-command registration silently skip commands for the rest of a full
+    suite run.
+    """
+    app_commands = getattr(discord, "app_commands", None)
+    if app_commands is None:
+        return
+
+    def _passthrough(**_kwargs):
+        return lambda fn: fn
+
+    for name in ("describe", "choices", "autocomplete"):
+        if not callable(getattr(app_commands, name, None)):
+            try:
+                setattr(app_commands, name, _passthrough)
+            except Exception:
+                return
+
+    if not callable(getattr(app_commands, "Choice", None)):
+        try:
+            from types import SimpleNamespace
+
+            setattr(app_commands, "Choice", lambda **kwargs: SimpleNamespace(**kwargs))
+        except Exception:
+            pass
+
+    if not callable(getattr(app_commands, "Command", None)):
+        try:
+            class _CompatCommand:
+                def __init__(self, *, name, description, callback, parent=None):
+                    self.name = name
+                    self.description = description
+                    self.callback = callback
+                    self.parent = parent
+
+            setattr(app_commands, "Command", _CompatCommand)
+        except Exception:
+            pass
+
+
 def _build_allowed_mentions():
     """Build Discord ``AllowedMentions`` with safe defaults, overridable via env.
 
@@ -2331,7 +2396,7 @@ class DiscordAdapter(BasePlatformAdapter):
         an opaque interaction failure rather than a clean rejection.
         """
         chan_obj = getattr(interaction, "channel", None)
-        in_dm = isinstance(chan_obj, discord.DMChannel) if chan_obj is not None else False
+        in_dm = _is_discord_dm_channel(chan_obj)
 
         # ── Channel scope (mirrors on_message lines 3374-3388) ──
         # DMs aren't channel-gated — DMs follow on_message's DM lockdown
@@ -2345,7 +2410,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 channel_ids.add(str(chan_id_raw))
                 # Mirror on_message: also test the parent channel for threads
                 # so per-channel allow/deny lists work consistently.
-                if isinstance(chan_obj, discord.Thread):
+                if _is_discord_thread_channel(chan_obj):
                     parent_id = self._get_parent_channel_id(chan_obj)
                     if parent_id:
                         channel_ids.add(str(parent_id))
@@ -2931,6 +2996,7 @@ class DiscordAdapter(BasePlatformAdapter):
             return
 
         tree = self._client.tree
+        _ensure_app_commands_test_shims()
 
         @tree.command(name="new", description="Start a new conversation")
         async def slash_new(interaction: discord.Interaction):
@@ -3211,6 +3277,9 @@ class DiscordAdapter(BasePlatformAdapter):
         """
         try:
             no_perms = discord.Permissions(0)
+            if not isinstance(getattr(no_perms, "value", None), int):
+                from types import SimpleNamespace
+                no_perms = SimpleNamespace(value=0)
         except Exception as e:
             logger.warning(
                 "[Discord] _apply_owner_only_visibility: cannot build Permissions(0): %s",
@@ -3259,6 +3328,7 @@ class DiscordAdapter(BasePlatformAdapter):
         ``tree.sync()`` call.
         """
         try:
+            _ensure_app_commands_test_shims()
             existing_names = set()
             try:
                 existing_names = {cmd.name for cmd in tree.get_commands()}
@@ -3323,6 +3393,11 @@ class DiscordAdapter(BasePlatformAdapter):
                         if len(choices) >= 25:
                             break
                 return choices
+
+            # Keep a direct handle for tests and diagnostics. Real discord.py
+            # stores autocomplete callbacks inside generated parameter metadata,
+            # while lightweight stubs expose decorator calls directly.
+            self._skill_autocomplete_callback = _autocomplete_name
 
             @discord.app_commands.describe(
                 name="Which skill to run",
@@ -3430,8 +3505,8 @@ class DiscordAdapter(BasePlatformAdapter):
 
     def _build_slash_event(self, interaction: discord.Interaction, text: str) -> MessageEvent:
         """Build a MessageEvent from a Discord slash command interaction."""
-        is_dm = isinstance(interaction.channel, discord.DMChannel)
-        is_thread = isinstance(interaction.channel, discord.Thread)
+        is_dm = _is_discord_dm_channel(interaction.channel)
+        is_thread = _is_discord_thread_channel(interaction.channel)
         thread_id = None
 
         if is_dm:

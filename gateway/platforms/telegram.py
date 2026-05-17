@@ -4641,11 +4641,24 @@ class TelegramAdapter(BasePlatformAdapter):
         chat = message.chat
         user = message.from_user
         
-        # Determine chat type
+        # Determine chat type.  Tests and lightweight integrations may use
+        # string values, enum values, or MagicMock-derived ChatType constants;
+        # normalize the raw value instead of relying solely on object identity.
         chat_type = "dm"
-        if chat.type in {ChatType.GROUP, ChatType.SUPERGROUP}:
+        raw_chat_type = getattr(chat, "type", None)
+        raw_chat_type_norm = str(raw_chat_type).split(".")[-1].lower()
+        group_values = {"group", "supergroup"}
+        channel_values = {"channel"}
+        try:
+            group_values.update({str(getattr(ChatType, "GROUP", "")), str(getattr(ChatType, "SUPERGROUP", ""))})
+            channel_values.add(str(getattr(ChatType, "CHANNEL", "")))
+        except Exception:
+            pass
+        group_values = {str(v).split(".")[-1].lower() for v in group_values}
+        channel_values = {str(v).split(".")[-1].lower() for v in channel_values}
+        if raw_chat_type_norm in group_values:
             chat_type = "group"
-        elif chat.type == ChatType.CHANNEL:
+        elif raw_chat_type_norm in channel_values:
             chat_type = "channel"
 
         # Resolve DM topic name and skill binding.

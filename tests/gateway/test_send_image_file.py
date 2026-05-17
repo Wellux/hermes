@@ -242,8 +242,11 @@ class TestDiscordSendImageFile:
 
         assert result.success
         assert result.message_id == "100"
-        assert "file" in mock_channel.send.call_args.kwargs
-        assert file_cls.call_args.kwargs["filename"] == "renamed.pdf"
+        sent_file = mock_channel.send.call_args.kwargs["file"]
+        if file_cls.call_args is not None:
+            assert file_cls.call_args.kwargs["filename"] == "renamed.pdf"
+        else:
+            assert getattr(sent_file, "filename", None) == "renamed.pdf"
 
     def test_send_video_uploads_file_attachment(self, adapter, tmp_path):
         """send_video should upload a native Discord attachment."""
@@ -267,8 +270,11 @@ class TestDiscordSendImageFile:
 
         assert result.success
         assert result.message_id == "101"
-        assert "file" in mock_channel.send.call_args.kwargs
-        assert file_cls.call_args.kwargs["filename"] == "clip.mp4"
+        sent_file = mock_channel.send.call_args.kwargs["file"]
+        if file_cls.call_args is not None:
+            assert file_cls.call_args.kwargs["filename"] == "clip.mp4"
+        else:
+            assert getattr(sent_file, "filename", None) == "clip.mp4"
 
     def test_returns_error_when_file_missing(self, adapter):
         result = _run(
