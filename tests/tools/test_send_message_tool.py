@@ -114,7 +114,13 @@ class TestSendMessageTool:
         send_mock.assert_not_awaited()
         mirror_mock.assert_not_called()
 
-    def test_resolved_telegram_topic_name_preserves_thread_id(self):
+    def test_whatsapp_bare_phone_number_is_normalized_to_jid(self):
+        chat_id, thread_id, is_explicit = _parse_target_ref("whatsapp", "1234567890")
+        assert chat_id == "1234567890@s.whatsapp.net"
+        assert thread_id is None
+        assert is_explicit is True
+
+
         config, telegram_cfg = _make_config()
 
         with patch("gateway.config.load_gateway_config", return_value=config), \

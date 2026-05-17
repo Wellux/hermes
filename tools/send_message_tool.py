@@ -349,6 +349,9 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         match = _WHATSAPP_JID_TARGET_RE.fullmatch(target_ref)
         if match:
             return match.group(1), None, True
+    # Normalize bare digits to JID format for WhatsApp.
+    if target_ref.strip().isdigit():
+        return f"{target_ref.strip()}@s.whatsapp.net", None, True
     if platform_name in _PHONE_PLATFORMS:
         match = _E164_TARGET_RE.fullmatch(target_ref)
         if match:
